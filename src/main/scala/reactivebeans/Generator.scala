@@ -24,39 +24,33 @@ object Generator {
   
   def usage() {
     println("Options:")
-    println("reactive-beans [-p predicate] <baseFolder> <packageName> <toProcess>")
-    println("\t <baseFolder>: folder where generated classes are created")
-    println("\t <packageName>: package name outputed as first line for every class")
-    println("\t <toProcess>: class or package written in java naming convention like javax.swing.JLabel")
+    println("reactive-beans [options] <toProcess>...")
+    println("\t -bd --base-directory: directory where generated classes are created, . is assumed as default")
+    println("\t -pn --package-name: package name outputed as first line for every class.")
     println("\t -p predicate: Special predicate used to react to signal changes updating the underlying\n" +
             "\t               property. For example, when using swing, the predicate should be _.isVisible\n" +
             "\t               where _ will be the container of the property")
+    println("\t <toProcess>: class or package written in java naming convention like javax.swing.JLabel")
     println("Classes to be processed must be already in classpath.")
   }
   
   /*TODO create better console interface to parse options*/
-  def main(args0: Array[String]) {
-    var args = args0
-    try {
-      var specialPredicate: Option[String] = None
-      println("Result from parsing: " + GetOps.parse(args0, GetOps.ToggleOp("c", "caca"), GetOps.ParamOp("T", "tarado")))
-//      new Getops(ParamOp("", "", "")).parse(args0) match {
-//        case Left(error) => 
-//          System.err.println("error");
-//          exit(1)
-//        case Right((ops, rest)) =>
-//          
-//      }
-      
-//      if (args(0) == "-p") {
-//        specialPredicate = Some(args(1))
-//        args = args.drop(2)
-//      }
-//      val baseFolder = new File(args(0))
-//      val classes = args.drop(2).toList flatMap ClassLister.listClasses
-//    
-//      generate(classes, baseFolder, args(1), specialPredicate)
-    } catch {case ex: IndexOutOfBoundsException => usage()}
+  def main(args: Array[String]) {
+    import GetOps._
+    val predicateOp = ParamOp("p", "predicate")
+    val baseDirOp = ParamOp("bd", "base-directory")
+    val packageNameOp = ParamOp("pn", "package-name", s => 
+      if (s matches "\\w+(\\.\\w+)*") None
+      else Some(s + " is not a valid package name"))
+    GetOps.parse(args, predicateOp, baseDirOp, packageNameOp) match {
+      case Success(ops~args, rest) =>
+        if (args.isEmpty) return usage()
+        val specialPredicate = ops collect {case predicateOp.Instance(value) => value} headOption
+        val baseDir = (ops collect {case baseDirOp.Instance(value) => new File(value)} headOption) getOrElse(new File(""))
+        val packageName = (ops collect {case packageNameOp.Instance(value) => value} headOption) getOrElse("")
+        generate(args.map(_.value), baseDir, packageName, specialPredicate)
+      case err => println(err); usage()
+    }
   }
   
   /**
