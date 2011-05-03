@@ -30,6 +30,14 @@ object Generator {
     println("\t -p predicate: Special predicate used to react to signal changes updating the underlying\n" +
             "\t               property. For example, when using swing, the predicate should be _.isVisible\n" +
             "\t               where _ will be the container of the property")
+    println("\t -m --bean-guessing-mode: One of:\n" + 
+            "\t\t\t\tauto: Will request a standard BeanInfo unless the class extends ScalaObject\n" +
+            "\t\t\t\t\tin which case the ScalaIntrospector will be used.\n" +
+            "\t\t\t\tjava: Will always force obtaining the BeanInfo via java.beans.Introspector\n" +
+            "\t\t\t\t\tuseful when you have created BeanInfo object for your scala class and want\n" +
+            "\t\t\t\t\tthe wrapper based on those." +
+            "\t\t\t\tscala: Will always force obtaining the BeanInfo via ScalaIntrospector,\n" +
+            "\t\t\t\t\tit is here for completeness, but probably will never be used.")
     println("\t <toProcess>: class or package written in java naming convention like javax.swing.JLabel")
     println("Classes to be processed must be already in classpath.")
   }
@@ -39,38 +47,52 @@ object Generator {
     import GetOps._
     val predicateOp = ParamOp("p", "predicate")
     val baseDirOp = ParamOp("bd", "base-directory")
+    val beanModeOp = ParamOp("m", "bean-guessing-mode", {
+        case "auto"|"java"|"scala" => None
+        case other => Some("Supported bean guessing modes are auto, java and scala")
+      })
     val packageNameOp = ParamOp("pn", "package-name", s => 
       if (s matches "\\w+(\\.\\w+)*") None
       else Some(s + " is not a valid package name"))
-    GetOps.parse(args, predicateOp, baseDirOp, packageNameOp) match {
+    GetOps.parse(args, predicateOp, baseDirOp, packageNameOp, beanModeOp) match {
       case Success(ops~args, rest) =>
         if (args.isEmpty) return usage()
         val specialPredicate = ops collect {case predicateOp.Instance(value) => value} headOption
         val baseDir = (ops collect {case baseDirOp.Instance(value) => new File(value)} headOption) getOrElse(new File(""))
         val packageName = (ops collect {case packageNameOp.Instance(value) => value} headOption) getOrElse("")
-        generate(args.map(_.value), baseDir, packageName, specialPredicate)
+        val beanGuessingMode = (ops collect {
+            case beanModeOp.Instance("auto") => BeanGuessMode.Auto
+            case beanModeOp.Instance("java") => BeanGuessMode.Java
+            case beanModeOp.Instance("scala") => BeanGuessMode.Scala
+          } headOption) getOrElse(BeanGuessMode.Auto)
+        
+        new InstanceGenerator(baseDir,
+                              packageName,
+                              specialPredicate,
+                              beanGuessingMode).generate(args.map(_.value) flatMap ClassLister.listClasses)
       case err => println(err); usage()
     }
   }
   
-  /**
-   * Only entry point of the Generator
-   * @param classes List of classes or packages to be processed
-   * @param baseDirectory Directory where generated files will be outputed
-   * @param packageName Package declaration at the begining of every file
-   * @param specialPredicate special predicate to restrict the listener with a takeWhile
-   * see https://github.com/nafg/reactive/tree/master/reactive-core
-   */
-  def generate(classes: List[String], baseDirectory: File, packageName: String, specialPredicate: Option[String]) {
-    new InstanceGenerator(baseDirectory, packageName, specialPredicate).generate(classes)
+  object BeanGuessMode extends Enumeration {
+    val Auto, Java, Scala = Value
   }
   
   private[reactivebeans] def isValidModifier(mod: Int) = !Modifier.isStatic(mod) && (Modifier.isPublic(mod) || Modifier.isProtected(mod))
   
+  
   /**
-   * As its name implies, it represents a current generation instance
+   * Only entry point of the Generator
+   * @param baseDirectory Directory where generated files will be outputed
+   * @param packageName Package declaration at the begining of every file
+   * @param specialPredicate special predicate to restrict the listener with a takeWhile
+   * @param beanGuessMode Mode for guessing bean, it can be auto, or forced to java or scala.
+   * see https://github.com/nafg/reactive/tree/master/reactive-core
    */
-  private class InstanceGenerator(baseFolder: File, packageName: String, specialPredicate: Option[String]) {
+  private class InstanceGenerator(baseFolder: File,
+                                  packageName: String,
+                                  specialPredicate: Option[String],
+                                  beanGuessMode: BeanGuessMode.Value) {
     
     private var alreadyGenerated: Map[Class[_], Wrapper] = Map.empty
     
@@ -101,8 +123,16 @@ object Generator {
         case None =>
           println("Analysing " + clasz)
           val wrapper = Wrapper(clasz)
-          val bi = if (classOf[ScalaObject].isAssignableFrom(clasz)) ScalaIntrospector.getBeanInfo(clasz)
-          else Introspector.getBeanInfo(clasz)
+          
+          //Obtain a bean info
+          val bi = beanGuessMode match {
+            case BeanGuessMode.Auto =>
+              if (classOf[ScalaObject].isAssignableFrom(clasz)) ScalaIntrospector.getBeanInfo(clasz)
+              else Introspector.getBeanInfo(clasz)
+            case BeanGuessMode.Scala => ScalaIntrospector.getBeanInfo(clasz)
+            case BeanGuessMode.Java => Introspector.getBeanInfo(clasz)
+          }
+          
           val propertyDescriptors = bi.getPropertyDescriptors
           for (pd <- propertyDescriptors if pd.isBound;
                rm = pd.getReadMethod if rm != null;
@@ -167,7 +197,15 @@ object Generator {
       }
     }
     case class Val(pd: PropertyDescriptor) extends Signal("Val") {val immutable = true}
-    case class Var(pd: PropertyDescriptor) extends Signal("Var") {val immutable = false}
+    case class Var(pd: PropertyDescriptor) extends Signal("Var") {
+      val immutable = false
+      def writeMethodIsVararg: Boolean = {
+        pd.getWriteMethod.isVarArgs || (pd match {
+            case ai: AdditionalInfo => ai.writeMethodIsVararg
+            case _ => false
+          })
+      }
+    }
     
     
     /**
@@ -205,14 +243,11 @@ object Generator {
           ps.print("\t\tval " + signal.name + " = " + signal.prefix + "(")
           ps.println("outer." + signal.pd.getReadMethod.getName + ")")
           signal match {
-            case Var(_) => 
+            case v@Var(_) => 
               ps.print("\t\t" + signal.name + predicate + " foreach (e => outer." + 
                        NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
               val wm = signal.pd.getWriteMethod
-              if (wm.isVarArgs &&
-                  classOf[collection.TraversableOnce[_]].
-                  isAssignableFrom(signal.pd.getReadMethod.getReturnType))
-                    ps.print("e:_*")
+              if (v.writeMethodIsVararg) ps.print("e:_*")
               else ps.print("e")
               ps.println("))")
             case Val(_) =>

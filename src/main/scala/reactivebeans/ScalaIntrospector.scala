@@ -3,7 +3,7 @@ package reactivebeans
 import java.beans._
 import java.lang.reflect.Method
 import scala.reflect.NameTransformer
-import scala.tools.scalap.scalax.rules.scalasig.{ScalaSig, ScalaSigParser, MethodSymbol, SymbolInfo}
+import scala.tools.scalap.scalax.rules.scalasig._
 
 /**
  * ScalaInstropector will return BeanInfo for scala classes based on the
@@ -19,6 +19,7 @@ object ScalaIntrospector {
   private class IntrospectorInstance(mainClass: Class[_]) {
     
     var generatedSig = Map[Class[_], (Option[ScalaSig], Seq[MethodSymbol])]()
+    var validatedMethodsSymbol = Map[Method, MethodSymbol]()
     def findSig(c: Class[_]) = {
       generatedSig.get(c) match {
         case Some(sig) => sig
@@ -100,10 +101,24 @@ object ScalaIntrospector {
       override val getPropertyDescriptors = {
         properties map {t => 
           try {
-            val res = new PropertyDescriptor(t._1, t._2, t._3)
+            val res = new PropertyDescriptor(t._1, t._2, t._3) with AdditionalInfo {
+//              println("Analysing property " + t._1 + " to see if is vararg. Children: " +
+//                      validatedMethodsSymbol(t._3).children.map(p => 
+//                  p.name + " - " + p.asInstanceOf[MethodSymbol].infoType
+//                ))
+              val writeMethodIsVararg = validatedMethodsSymbol.get(t._3).map(_.children.head match {
+                  case m: MethodSymbol =>
+                    m.infoType match {
+                      case TypeRefType(_, symbol, _) => symbol.name == "<repeated>"
+                      case _ => false
+                    }
+                  case _ => false
+                }) getOrElse(false)
+            }
             res setBound true
-            res
-          } catch {case ex =>
+            res: PropertyDescriptor
+          } catch {
+            case ex: IntrospectionException =>
               println("Failed on property " + t._1 + " mismatch on\n\t" + t._2 + "\n\t" + t._3)
               null
           }
@@ -118,15 +133,20 @@ object ScalaIntrospector {
       val allMethods = findSig(m.getDeclaringClass)._2
       allMethods find (_.name == mName) match {
         case Some(ms) =>
-          val res = !ms.isPrivate && ms.symbolInfo.privateWithin.isEmpty
+          val correctModifier = !ms.isPrivate && ms.symbolInfo.privateWithin.isEmpty
           
 //              print("\t" + mName + " from " + m.getDeclaringClass + " is a" + (if(res) " valid" else "n invalid") + " method - ")
 //              println((ms.isProtected, ms.isPrivate, ms.symbolInfo.privateWithin))
           
-          res && Generator.isValidModifier(m.getModifiers)
+          val res = correctModifier && Generator.isValidModifier(m.getModifiers)
+          if (res) validatedMethodsSymbol += Pair(m, ms)
+          res
         case _ => 
           false
       }
     }
   }
+}
+trait AdditionalInfo {
+  val writeMethodIsVararg: Boolean
 }
