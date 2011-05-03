@@ -42,14 +42,6 @@ object GetOps extends Parsers {
     def descr: String
     trait Instance {
       val input = ValidInput.this
-      
-      override def equals(that: Any) = {
-        println("wejfsldkfjldskfjsñlitjñsdlkjglkj")
-        that.asInstanceOf[AnyRef].getClass == getClass && (that match {
-            case vi: ValidInput#Instance => vi.input == input
-            case _ => false
-          })
-      }
     }
     abstract class InstanceCompanion[T <: Instance : ClassManifest, Res] {
       def value(t: T): Res
@@ -83,11 +75,11 @@ object GetOps extends Parsers {
       def value(i: Instance) = i.value
     }
     def process(input: Input) = {
-      if (input.atEnd) error("Value expected for param " + longForm)
+      if (input.atEnd) Error("Value expected for param " + longForm, input)
       else {
         val value = input.first
         inputValidator(value) match {
-          case Some(errMsg) => error("Wrong argument for option " + longForm + ": " + errMsg)
+          case Some(errMsg) => Error("Wrong argument for option " + longForm + ": " + errMsg, input)
           case None => Success(new Instance(value), input.rest)
         }
       }
@@ -108,4 +100,30 @@ object GetOps extends Parsers {
       else Success(Instance(input.first), input.rest)
     }
   }
+  
+  
+  
+  /*Overriden to make Errors not recoverable*/
+  override def rep1[T](first: => Parser[T], p: => Parser[T]): Parser[List[T]] = Parser { in =>
+    import scala.collection.mutable.ListBuffer
+    import scala.annotation.tailrec
+    val elems = new ListBuffer[T]
+
+    def continue(in: Input): ParseResult[List[T]] = {
+      val p0 = p    // avoid repeatedly re-evaluating by-name parser
+      @tailrec def applyp(in0: Input): ParseResult[List[T]] = p0(in0) match {
+        case Success(x, rest) => elems += x ; applyp(rest)
+        case Failure(x, rest) => Success(elems.toList, in0)
+        case err @ Error(x, rest) => err
+      }
+     
+      applyp(in)
+    }
+
+    first(in) match {
+      case Success(x, rest) => elems += x ; continue(rest)
+      case ns: NoSuccess    => ns
+    }
+  }
+  
 }
