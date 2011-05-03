@@ -39,22 +39,23 @@ object Generator {
     var args = args0
     try {
       var specialPredicate: Option[String] = None
-      new Getops(ParamOp("", "", "")).parse(args0) match {
-        case Left(error) => 
-          System.err.println("error");
-          exit(1)
-        case Right((ops, rest)) =>
-          
-      }
+      println("Result from parsing: " + GetOps.parse(args0, GetOps.ToggleOp("c", "caca"), GetOps.ParamOp("T", "tarado")))
+//      new Getops(ParamOp("", "", "")).parse(args0) match {
+//        case Left(error) => 
+//          System.err.println("error");
+//          exit(1)
+//        case Right((ops, rest)) =>
+//          
+//      }
       
-      if (args(0) == "-p") {
-        specialPredicate = Some(args(1))
-        args = args.drop(2)
-      }
-      val baseFolder = new File(args(0))
-      val classes = args.drop(2).toList flatMap ClassLister.listClasses
-    
-      generate(classes, baseFolder, args(1), specialPredicate)
+//      if (args(0) == "-p") {
+//        specialPredicate = Some(args(1))
+//        args = args.drop(2)
+//      }
+//      val baseFolder = new File(args(0))
+//      val classes = args.drop(2).toList flatMap ClassLister.listClasses
+//    
+//      generate(classes, baseFolder, args(1), specialPredicate)
     } catch {case ex: IndexOutOfBoundsException => usage()}
   }
   
