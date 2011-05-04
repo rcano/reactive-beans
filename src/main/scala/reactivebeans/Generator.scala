@@ -26,7 +26,7 @@ object Generator {
     println("Options:")
     println("reactive-beans [options] <toProcess>...")
     println("\t -bd --base-directory: directory where generated classes are created, . is assumed as default")
-    println("\t -pn --package-name: package name outputed as first line for every class.")
+    println("\t -pn --package-name: package name outputted as first line for every class.")
     println("\t -p predicate: Special predicate used to react to signal changes updating the underlying\n" +
             "\t               property. For example, when using swing, the predicate should be _.isVisible\n" +
             "\t               where _ will be the container of the property")
