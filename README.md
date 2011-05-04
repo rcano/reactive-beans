@@ -42,19 +42,19 @@ to get a usage output, you can follow from there. When you read the usage descri
 classpath the library where the classes should be extracted from (except for classes from the java sdk), so if you want
 to generate wrappers for scala.swing, you must add it to the classpath, same applies for scala-library.
 
-Current supported options are
-    -bd --base-directory   : directory where generated classes are created, . is assumed as default                                                                    
-    -pn --package-name     : package name outputted as first line for every class.                                                                                        
-    -p predicate           : Special predicate used to react to signal changes updating the underlying
-                  property. For example, when using swing, the predicate should be _.isVisible
-                  where _ will be the container of the property
-    -m --bean-guessing-mode: One of:
-                           auto: Will request a standard BeanInfo unless the class extends ScalaObject
-                                   in which case the ScalaIntrospector will be used.
-                           java: Will always force obtaining the BeanInfo via java.beans.Introspector
-                                   useful when you have created BeanInfo object for your scala class and want
-                                   the wrapper based on those.                             scala: Will always force obtaining the BeanInfo via ScalaIntrospector,
-                                   it is here for completeness, but probably will never be used
+    Current supported options are
+        -bd --base-directory   : directory where generated classes are created, . is assumed as default                                                                    
+        -pn --package-name     : package name outputted as first line for every class.                                                                                        
+        -p predicate           : Special predicate used to react to signal changes updating the underlying
+                      property. For example, when using swing, the predicate should be _.isVisible
+                      where _ will be the container of the property
+        -m --bean-guessing-mode: One of:
+                               auto: Will request a standard BeanInfo unless the class extends ScalaObject
+                                       in which case the ScalaIntrospector will be used.
+                               java: Will always force obtaining the BeanInfo via java.beans.Introspector
+                                       useful when you have created BeanInfo object for your scala class and want
+                                       the wrapper based on those.                             scala: Will always force obtaining the BeanInfo via ScalaIntrospector,
+                                       it is here for completeness, but probably will never be used
 
 
 Limitations
