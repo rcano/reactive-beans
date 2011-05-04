@@ -36,9 +36,20 @@ working with scala.
 Usage
 -----
 
-    java -jar reactive-beans.jar
+In the root folder there is a jar that was generated with proguard and pack200, this is the current "dist" until
+a proper project management is configure for the repo.
+Use it as
 
-to get a usage output, you can follow from there. When you read the usage description, note that you must add to the
+    java -cp $SCALA_HOME/lib/scala-swing.jar:$SCALA_HOME/lib/scala-library.jar:reactive-beans_2.8.1-0.5-SNAPSHOT-release.jar Launcher -pn dest.package.name -bd myProj/src/main/scala/my/dest/packageDir scala.swing.*
+
+That will generate wrappers for the whole scala.swing classes, in the directory myProj/src/main/scala/my/dest/packageDir, with package dest.package.name
+declared in the beginning of each wrapper.
+
+Do
+
+    java -jar reactive-beans_2.8.1-0.5-SNAPSHOT-release.jar
+
+to get a usage output. When you read the usage description, note that you must add to the
 classpath the library where the classes should be extracted from (except for classes from the java sdk), so if you want
 to generate wrappers for scala.swing, you must add it to the classpath, same applies for scala-library.
 
