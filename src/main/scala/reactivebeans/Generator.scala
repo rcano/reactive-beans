@@ -4,7 +4,7 @@ package reactivebeans
 /**
  * Generator is the main entry point to the reactive beans wrapper.
  */
-import java.beans.{Introspector, PropertyDescriptor}
+import java.beans.{Introspector, PropertyDescriptor, EventSetDescriptor, MethodDescriptor}
 import java.io.{File, PrintStream}
 import java.lang.reflect.Modifier
 import scala.reflect.NameTransformer
@@ -133,28 +133,57 @@ object Generator {
             case BeanGuessMode.Java => Introspector.getBeanInfo(clasz)
           }
           
+//          println("\tEvents:")
+//          for (evtDescr <- bi.getEventSetDescriptors) {
+//            println("\t\tGroup: " + evtDescr.getName)
+//            for (evt <- evtDescr.getListenerMethodDescriptors) {
+//              println("\t\t\t" + evt.getName)
+//            }
+//          }
+          
+          //Analyse property descriptors
           val propertyDescriptors = bi.getPropertyDescriptors
-          for (pd <- propertyDescriptors if pd.isBound;
-               rm = pd.getReadMethod if rm != null;
-               wm = pd.getWriteMethod if wm != null) { //only mutable properties are generated
-            val rmdc = rm.getDeclaringClass
-            if (rmdc != clasz) {
-              val dep = generate(rmdc)
-              if (!wrapper.alreadyDepends(dep)) wrapper.dependencies :+= dep
-            } else wrapper.signals :+= Signal(pd)
+          if (propertyDescriptors != null) {
+            for (pd <- propertyDescriptors if pd.isBound;
+                 rm = pd.getReadMethod if rm != null;
+                 wm = pd.getWriteMethod if wm != null) { //only mutable properties are generated
+              val rmdc = rm.getDeclaringClass
+              if (rmdc != clasz) {
+                val dep = generate(rmdc)
+                if (!wrapper.alreadyDepends(dep)) wrapper.dependencies :+= dep
+              } else wrapper.signals :+= Signal(pd)
+            }
           }
+          //Analyse eventSetDescriptors, this code is repeated with the propertyDescriptor ones,
+          //common stuff should be factored out
+          val eventSetDescriptors = bi.getEventSetDescriptors
+          if (eventSetDescriptors != null) {
+            for (esd <- eventSetDescriptors;
+                 alm = esd.getAddListenerMethod) {
+              val rmdc = alm.getDeclaringClass
+              if (rmdc != clasz) {
+                val dep = generate(rmdc)
+                if (!wrapper.alreadyDepends(dep)) wrapper.dependencies :+= dep
+              } else wrapper.streams :+= EventStream(esd)
+            }
+          }
+          
           //Sanitize dependencies
           val toRemoveDeps = for (w1 <- wrapper.dependencies;
                                   w2 <- wrapper.dependencies if w1 != w2;
                                   if w1.alreadyDepends(w2)) yield w2
           wrapper.dependencies = wrapper.dependencies diff toRemoveDeps
       
-          //Sanitize signals
-          val toRemoveSignals = for (signal <- wrapper.signals if (wrapper.alreadyInherits(signal))) yield signal
-          wrapper.signals = wrapper.signals diff toRemoveSignals
+          //Sanitize signals and events
+          def sanitize[T <: Named](seqToSanitize: Wrapper => Seq[T]) = {
+            val toRemove = for (named <- seqToSanitize(wrapper) if (wrapper.alreadyInherits(named))) yield named
+            seqToSanitize(wrapper) diff toRemove
+          }
+          wrapper.signals = sanitize(_.signals)
+          wrapper.streams = sanitize(_.streams)
           
-          if (wrapper.signals.nonEmpty) {
-            println("Writing wrapper " + wrapper)
+          if (wrapper.signals.nonEmpty || wrapper.streams.nonEmpty) {
+            println("Writing wrapper " + wrapper.peer)
             writeWrapper(wrapper) // a wrapper that adds no field is useless
           }
           alreadyGenerated += Pair(clasz, wrapper)
@@ -165,6 +194,7 @@ object Generator {
     case class Wrapper(peer: Class[_]) {
       var dependencies: Seq[Wrapper] = Vector.empty
       var signals: Seq[Signal] = Vector.empty
+      var streams: Seq[EventStream] = Vector.empty
       def name = peer.getSimpleName + "Reactive"
       
       def alreadyDepends(w: Wrapper): Boolean = {
@@ -173,19 +203,42 @@ object Generator {
           case None => false
         }
       }
-      def alreadyInherits(s: Signal): Boolean = {
-        dependencies find (w => w.signals.contains(s) || w.alreadyInherits(s)) match {
+      def alreadyInherits(s: Named): Boolean = {
+        val seqToInspect = s match {
+          case _: Signal => (_: Wrapper).signals
+          case _: EventStream => (_: Wrapper).streams
+        }
+        dependencies find (w => seqToInspect(w).contains(s) || w.alreadyInherits(s)) match {
           case Some(_) => true
           case None => false
         }
       }
       
+      def traverse(f: Wrapper => Unit) {
+        def traverse(w: Wrapper, f: Wrapper => Unit) {
+          f(w)
+          w.dependencies foreach (traverse(_, f))
+        }
+        for (d <- dependencies) traverse(d, f)
+      }
+      
+      lazy val hasPropertyChangeListener: Boolean = 
+        try {
+          val m = peer.getMethod("addPropertyChangeListener", classOf[java.beans.PropertyChangeListener])
+          true
+        } catch {case ex: NoSuchMethodException => false}
 //      def linearDependencies: Seq[Wrapper] = dependencies flatMap (w => w +: w.linearDependencies)
     }
+    
+    sealed trait Named {
+      def name: String
+    }
+    
+    //Signal definition
     object Signal {
       def apply(pd: PropertyDescriptor) = if (pd.getWriteMethod == null) Val(pd) else Var(pd)
     }
-    sealed abstract class Signal(val prefix: String) {
+    sealed abstract class Signal(val prefix: String) extends Named {
       def pd: PropertyDescriptor
       lazy val name = pd.getName
       override def toString = prefix + "(" + name + ")"
@@ -206,7 +259,14 @@ object Generator {
           })
       }
     }
-    
+    //EventStrams definition
+    case class EventStream(eventSetDescriptor: EventSetDescriptor) extends Named {
+      lazy val name = eventSetDescriptor.getName
+      override def equals(that: Any) = that match {
+        case es: EventStream => es.name == name
+        case _ => false
+      }
+    }
     
     /**
      * Writes the scala file 
@@ -223,6 +283,11 @@ object Generator {
         ps.println("import reactive._")
         ps.println()
         val hasDeps = wrapper.dependencies.nonEmpty
+        var hasSignalDeps, hasStreamDeps = false
+        wrapper.traverse {w =>
+          if (w.signals.nonEmpty) hasSignalDeps = true
+          if (w.streams.nonEmpty) hasStreamDeps = true
+        }
         val parameters = {
           val params = wrapper.peer.getTypeParameters
           if (params.nonEmpty) params.map(p => p.toString).mkString("[", ", ", "]") else ""
@@ -234,37 +299,121 @@ object Generator {
       
       
         //must define trait Signals
+        
+        //calculate predicate
         val predicate = specialPredicate match {
-          case Some(cond) => ".change.takeWhile{e => " + cond.replaceAll("_\\.", "outer.") + "}"
+          case Some(cond) =>
+            def err = println("\tWARNING:Could not prove that " + wrapper.peer + " satisfies " + cond)
+            "_\\.(.+)\\(?".r.findFirstMatchIn(cond) match {
+              case Some(m) =>
+                val methodName = m.group(1)
+                if (wrapper.peer.getMethods find (_.getName == methodName) isDefined) {
+                  ".change.takeWhile{e => " + cond.replaceAll("_\\.", "outer.") + "}"
+                } else {
+                  err
+                  ""
+                }
+              case _ =>
+                err
+                ""
+            }
           case None => ""
         }
-        ps.println("\ttrait Signals" + (if (hasDeps) " extends super.Signals" else "") + " {")
-        for (signal <- wrapper.signals) {
-          ps.print("\t\tval " + signal.name + " = " + signal.prefix + "(")
-          ps.println("outer." + signal.pd.getReadMethod.getName + ")")
-          signal match {
-            case v@Var(_) => 
-              ps.print("\t\t" + signal.name + predicate + " foreach (e => outer." + 
-                       NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
-              val wm = signal.pd.getWriteMethod
-              if (v.writeMethodIsVararg) ps.print("e:_*")
-              else ps.print("e")
-              ps.println("))")
-            case Val(_) =>
-          }
-        }
-        ps.println("\t}")
+        if (wrapper.signals.nonEmpty) writeSignals(wrapper, predicate, hasSignalDeps, ps)
         ps.println()
-      
-        //define the field signals
-        ps.print("\t")
-        if (hasDeps) ps.print("override ") 
-        ps.println("lazy val signals = new Signals {}")
+        if (wrapper.streams.nonEmpty) writeStreams(wrapper, predicate, hasStreamDeps, ps)
       
         ps.println("}")
       } finally {
         ps.close()
       }
+    }
+    
+    def writeSignals(wrapper: Wrapper, predicate: String, hasDeps: Boolean, ps: PrintStream) {
+      ps.println("\ttrait Signals" + (if (hasDeps) " extends super.Signals" else "") + " {")
+      for (signal <- wrapper.signals) {
+        ps.print("\t\tval " + signal.name + " = " + signal.prefix + "(")
+        ps.println("outer." + signal.pd.getReadMethod.getName + ")")
+        signal match {
+          case v@Var(_) => 
+            ps.print("\t\t" + signal.name + predicate + " foreach (e => outer." + 
+                     NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
+            val wm = signal.pd.getWriteMethod
+            if (v.writeMethodIsVararg) ps.print("e:_*")
+            else ps.print("e")
+            ps.println("))")
+          case Val(_) =>
+        }
+      }
+      ps.println()
+        
+      //Check for addPropertyChangeListener support, in which case
+      //registration for the signals of this wrapper is added
+      if (wrapper.hasPropertyChangeListener) {
+        ps.println("\t\taddPropertyChangeListener(new java.beans.PropertyChangeListener {")
+        ps.println("\t\t\tdef propertyChange(evt: java.beans.PropertyChangeEvent) {")
+        ps.println("\t\t\t\tdef cast[R](a: Any) = a.asInstanceOf[R]")
+        ps.println("\t\t\t\tevt.getPropertyName match {")
+        for (signal <- wrapper.signals) {
+          ps.println("\t\t\t\t\tcase \"" + signal.name + "\" => " + signal.name + "() = cast(evt.getNewValue)")
+        }
+        ps.println("\t\t\t\t\tcase _ =>") //ignore unknown properties
+        ps.println("\t\t\t\t}")
+        ps.println("\t\t\t}")
+        ps.println("\t\t})")
+      }
+        
+        
+      ps.println("\t}")
+      ps.println()
+      
+      //define the field signals
+      ps.print("\t")
+      if (hasDeps) ps.print("override ") 
+      ps.println("lazy val signals = new Signals {}")
+    }
+    
+    
+    def writeStreams(wrapper: Wrapper, predicate: String, hasDeps: Boolean, ps: PrintStream) {
+      ps.println("\ttrait EventStreams" + (if (hasDeps) " extends super.EventStreams" else "") + " {")
+      
+      if(!hasDeps) ps.println("\t\tclass ESource[T] extends EventSource[T]")
+      
+      for (event <- wrapper.streams) {
+        //create the object containing the streams
+        val eventSetDescriptor = event.eventSetDescriptor
+        val descriptors = eventSetDescriptor.getListenerMethodDescriptors
+        def writeEventSource(prefix: String, descr: MethodDescriptor) {
+          ps.println(prefix + "val " + descr.getName + " = new ESource[" + descr.getMethod.getParameterTypes()(0).getName + "]")
+        }
+        var prefix = ""
+        if (descriptors.length == 1) {
+          prefix = "EventStreams.this."
+          writeEventSource("\t\t", descriptors(0))
+        } else {
+          prefix = event.name + "."
+          ps.println("\t\tobject " + event.name + " {")
+          for (descriptor <- descriptors) {
+            writeEventSource("\t\t\t", descriptor)
+          }
+          ps.println("\t\t}")
+        }
+        
+        //register the listener
+        ps.println("\t\t" + eventSetDescriptor.getAddListenerMethod.getName + "(new " + eventSetDescriptor.getListenerType.getName + " {")
+        for (descr <- descriptors) {
+          ps.print("\t\t\tdef " + descr.getName + "(evt: " + descr.getMethod.getParameterTypes()(0).getName + ") {")
+          ps.println(prefix + descr.getName + ".fire(evt)}")
+        }
+        ps.println("\t\t})")
+      }
+      ps.println("\t}")
+      ps.println()
+      
+      //define the field events
+      ps.print("\t")
+      if (hasDeps) ps.print("override ") 
+      ps.println("lazy val events = new EventStreams {}")
     }
   }
 
