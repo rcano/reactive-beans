@@ -386,12 +386,11 @@ object Generator {
         def writeEventSource(prefix: String, descr: MethodDescriptor) {
           ps.println(prefix + "val " + descr.getName + " = new ESource[" + descr.getMethod.getParameterTypes()(0).getName + "]")
         }
-        var prefix = ""
+        var prefix = "EventStreams.this."
         if (descriptors.length == 1) {
-          prefix = "EventStreams.this."
           writeEventSource("\t\t", descriptors(0))
         } else {
-          prefix = event.name + "."
+          prefix = prefix + event.name + "."
           ps.println("\t\tobject " + event.name + " {")
           for (descriptor <- descriptors) {
             writeEventSource("\t\t\t", descriptor)
