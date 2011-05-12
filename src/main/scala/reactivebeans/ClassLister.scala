@@ -48,14 +48,17 @@ object ClassLister {
   }
   def findInFolder(folder: File, classOrPackage: String): List[String] = {
     println("Searching in directory " + folder)
-//    val regex = classOrPackage.replaceAll("\\.", "/").replaceAll("**", "[.]*").replaceAll("*(?<!\\])", "[^/]*")
-//    println("Glob regex " + regex)
+    val regex = classOrPackage.replaceAll("\\.", "/").replaceAll("\\*\\*", "[.]*").replaceAll("\\*(?<!\\])", "[^/]*") + "\\.class"
+    def classNameFromFile(file: File) = file.getPath.replaceAll("\\.class", "").replaceAll("/", ".")
     var res: List[String] = Nil
-    val f = new File(folder, classOrPackage.replaceAll("\\.", File.separator))
-    if (f.isDirectory) {
-      f.listFiles foreach (f => res ::= classOrPackage + "." + f.getName.dropRight(6))
-    } else res ::= classOrPackage + "." + f.getName.dropRight(6)
     
+    def traverse(folder: File) { //naive recurse, may result in StackOverflow
+      for (file <- folder.listFiles) {
+        if (file.isFile && (file.getPath matches regex)) res ::= classNameFromFile(file)
+        else traverse(file)
+      }
+    }
+    traverse(folder)
     res
   }
 }
