@@ -38,6 +38,9 @@ object Generator {
             "\t\t\t\t\tthe wrapper based on those." +
             "\t\t\t\tscala: Will always force obtaining the BeanInfo via ScalaIntrospector,\n" +
             "\t\t\t\t\tit is here for completeness, but probably will never be used.")
+    println("\t --generate-test: Generate test classes to test the correct notification of properties for" + 
+            "\t                  outputted classes")
+    println("\t --bean-fixes: Specifies classes or packages to look for BeanFix.")
     println("\t <toProcess>: class or package written in java naming convention like javax.swing.JLabel")
     println("Classes to be processed must be already in classpath.")
   }
@@ -54,7 +57,9 @@ object Generator {
     val packageNameOp = ParamOp("pn", "package-name", s => 
       if (s matches "\\w+(\\.\\w+)*") None
       else Some(s + " is not a valid package name"))
-    GetOps.parse(args, predicateOp, baseDirOp, packageNameOp, beanModeOp) match {
+    val generateTestClassesOp = ToggleOp("", "generate-test")
+    val beanFixesOp = ParamOp("", "bean-fixes")
+    GetOps.parse(args, predicateOp, baseDirOp, packageNameOp, beanModeOp, generateTestClassesOp, beanFixesOp) match {
       case Success(ops~args, rest) =>
         if (args.isEmpty) return usage()
         val specialPredicate = ops collect {case predicateOp.Instance(value) => value} headOption
@@ -65,11 +70,16 @@ object Generator {
             case beanModeOp.Instance("java") => BeanGuessMode.Java
             case beanModeOp.Instance("scala") => BeanGuessMode.Scala
           } headOption) getOrElse(BeanGuessMode.Auto)
+        val generateTestClasses = (ops collect {case generateTestClassesOp.Instance => true} headOption) getOrElse false
+        val beanFixes = (ops collect {case beanFixesOp.Instance(value) => value.split(":").toSeq} headOption) getOrElse(Seq.empty)
         
-        new InstanceGenerator(baseDir,
-                              packageName,
-                              specialPredicate,
-                              beanGuessingMode).generate(args.map(_.value) flatMap ClassLister.listClasses)
+        new InstanceGenerator(
+          GeneratorSettings(baseDir,
+                            packageName,
+                            specialPredicate,
+                            beanGuessingMode,
+                            generateTestClasses,
+                            beanFixes)).generate(args.map(_.value) flatMap ClassLister.listClasses)
       case err => println(err); usage()
     }
   }
@@ -89,13 +99,18 @@ object Generator {
    * @param beanGuessMode Mode for guessing bean, it can be auto, or forced to java or scala.
    * see https://github.com/nafg/reactive/tree/master/reactive-core
    */
-  private class InstanceGenerator(baseFolder: File,
-                                  packageName: String,
-                                  specialPredicate: Option[String],
-                                  beanGuessMode: BeanGuessMode.Value) {
-    
+  private class InstanceGenerator(settings: GeneratorSettings) {
+    import settings._
     private var alreadyGenerated: Map[Class[_], Wrapper] = Map.empty
-    
+    private val beanFixes = {
+      settings.beanFixes flatMap ClassLister.listClasses filter {c =>
+        try classOf[BeanFix].isAssignableFrom(Class.forName(c))
+        catch {case ex => 
+            println("WARNING: BeanFix" + c + " not found")
+            false
+        }
+      } map (Class.forName(_).newInstance.asInstanceOf[BeanFix])
+    }
     /**
      * Performs simple filtering of selected classes and delegates actual work to per class generate
      */
@@ -191,83 +206,6 @@ object Generator {
       }
     }
     
-    case class Wrapper(peer: Class[_]) {
-      var dependencies: Seq[Wrapper] = Vector.empty
-      var signals: Seq[Signal] = Vector.empty
-      var streams: Seq[EventStream] = Vector.empty
-      def name = peer.getSimpleName + "Reactive"
-      
-      def alreadyDepends(w: Wrapper): Boolean = {
-        dependencies find (w2 => w == w2 || w2.alreadyDepends(w)) match {
-          case Some(_) => true
-          case None => false
-        }
-      }
-      def alreadyInherits(s: Named): Boolean = {
-        val seqToInspect = s match {
-          case _: Signal => (_: Wrapper).signals
-          case _: EventStream => (_: Wrapper).streams
-        }
-        dependencies find (w => seqToInspect(w).contains(s) || w.alreadyInherits(s)) match {
-          case Some(_) => true
-          case None => false
-        }
-      }
-      
-      def traverse(f: Wrapper => Unit) {
-        def traverse(w: Wrapper, f: Wrapper => Unit) {
-          f(w)
-          w.dependencies foreach (traverse(_, f))
-        }
-        for (d <- dependencies) traverse(d, f)
-      }
-      
-      lazy val hasPropertyChangeListener: Boolean = 
-        try {
-          val m = peer.getMethod("addPropertyChangeListener", classOf[java.beans.PropertyChangeListener])
-          true
-        } catch {case ex: NoSuchMethodException => false}
-//      def linearDependencies: Seq[Wrapper] = dependencies flatMap (w => w +: w.linearDependencies)
-    }
-    
-    sealed trait Named {
-      def name: String
-    }
-    
-    //Signal definition
-    object Signal {
-      def apply(pd: PropertyDescriptor) = if (pd.getWriteMethod == null) Val(pd) else Var(pd)
-    }
-    sealed abstract class Signal(val prefix: String) extends Named {
-      def pd: PropertyDescriptor
-      lazy val name = pd.getName
-      override def toString = prefix + "(" + name + ")"
-      def immutable: Boolean
-      def mutable = !immutable
-      override def equals(that: Any) = that match {
-        case s: Signal => s.name == name
-        case _ => false
-      }
-    }
-    case class Val(pd: PropertyDescriptor) extends Signal("Val") {val immutable = true}
-    case class Var(pd: PropertyDescriptor) extends Signal("Var") {
-      val immutable = false
-      def writeMethodIsVararg: Boolean = {
-        pd.getWriteMethod.isVarArgs || (pd match {
-            case ai: AdditionalInfo => ai.writeMethodIsVararg
-            case _ => false
-          })
-      }
-    }
-    //EventStrams definition
-    case class EventStream(eventSetDescriptor: EventSetDescriptor) extends Named {
-      lazy val name = eventSetDescriptor.getName
-      override def equals(that: Any) = that match {
-        case es: EventStream => es.name == name
-        case _ => false
-      }
-    }
-    
     /**
      * Writes the scala file 
      */
@@ -275,13 +213,19 @@ object Generator {
       baseFolder.mkdirs
       val destFile = new File(baseFolder, wrapper.name + ".scala")
       
-      val ps = new PrintStream(destFile)
+      val p = new Printer {
+        val ps = new PrintStream(destFile)
+        def printlnImpl(s: String) = ps.println(s)
+        def printImpl(s: String) = ps.print(s)
+      }
+      
+      
       try {
-        ps.println("package " + packageName)
-        ps.println()
-        ps.println("//This file was auto generated")
-        ps.println("import reactive._")
-        ps.println()
+        p.println("package " + packageName)
+        p.println()
+        p.println("import reactive._")
+        p.println()
+        p.println("//This file was auto generated")
         val hasDeps = wrapper.dependencies.nonEmpty
         var hasSignalDeps, hasStreamDeps = false
         wrapper.traverse {w =>
@@ -292,14 +236,12 @@ object Generator {
           val params = wrapper.peer.getTypeParameters
           if (params.nonEmpty) params.map(p => p.toString).mkString("[", ", ", "]") else ""
         }
-        ps.println("trait " + wrapper.name + parameters + " extends " + wrapper.peer.getName + parameters +
-                   (if (hasDeps) " with " + wrapper.dependencies.map(_.name).mkString(" with ")
-                    else " with Observing")
-                   + " { outer =>")
+        p.println("trait " + wrapper.name + parameters + " extends " + wrapper.peer.getName + parameters +
+                  (if (hasDeps) " with " + wrapper.dependencies.map(_.name).mkString(" with ")
+                   else " with Observing")
+                  + " { outer =>")
       
       
-        //must define trait Signals
-        
         //calculate predicate
         val predicate = specialPredicate match {
           case Some(cond) =>
@@ -319,101 +261,205 @@ object Generator {
             }
           case None => ""
         }
-        if (wrapper.signals.nonEmpty) writeSignals(wrapper, predicate, hasSignalDeps, ps)
-        ps.println()
-        if (wrapper.streams.nonEmpty) writeStreams(wrapper, predicate, hasStreamDeps, ps)
-      
-        ps.println("}")
+        p.inBlock {
+          if (wrapper.signals.nonEmpty) writeSignals(wrapper, predicate, hasSignalDeps, p)
+          p.println()
+          if (wrapper.streams.nonEmpty) writeStreams(wrapper, predicate, hasStreamDeps, p)
+          p.println()
+          val arg = (wrapper, p)
+          beanFixes filter (_.isDefinedAt(arg)) foreach (_(arg))
+        }
+        p.println()
+        p.println("}")
       } finally {
-        ps.close()
+        p.ps.close()
       }
     }
     
-    def writeSignals(wrapper: Wrapper, predicate: String, hasDeps: Boolean, ps: PrintStream) {
-      ps.println("\ttrait Signals" + (if (hasDeps) " extends super.Signals" else "") + " {")
-      for (signal <- wrapper.signals) {
-        ps.print("\t\tval " + signal.name + " = " + signal.prefix + "(")
-        ps.println("outer." + signal.pd.getReadMethod.getName + ")")
-        signal match {
-          case v@Var(_) => 
-            ps.print("\t\t" + signal.name + predicate + " foreach (e => outer." + 
-                     NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
-            val wm = signal.pd.getWriteMethod
-            if (v.writeMethodIsVararg) ps.print("e:_*")
-            else ps.print("e")
-            ps.println("))")
-          case Val(_) =>
-        }
-      }
-      ps.println()
-        
-      //Check for addPropertyChangeListener support, in which case
-      //registration for the signals of this wrapper is added
-      if (wrapper.hasPropertyChangeListener) {
-        ps.println("\t\taddPropertyChangeListener(new java.beans.PropertyChangeListener {")
-        ps.println("\t\t\tdef propertyChange(evt: java.beans.PropertyChangeEvent) {")
-        ps.println("\t\t\t\tdef cast[R](a: Any) = a.asInstanceOf[R]")
-        ps.println("\t\t\t\tevt.getPropertyName match {")
+    def writeSignals(wrapper: Wrapper, predicate: String, hasDeps: Boolean, p: Printer) {
+      p.println("trait Signals" + (if (hasDeps) " extends super.Signals" else "") + " {")
+      p.inBlock {
         for (signal <- wrapper.signals) {
-          ps.println("\t\t\t\t\tcase \"" + signal.name + "\" => " + signal.name + "() = cast(evt.getNewValue)")
+          p.println("val " + signal.name + " = " + signal.prefix + "(" +
+                    "outer." + signal.pd.getReadMethod.getName + ")")
+          signal match {
+            case v@Var(_) => 
+              p.print(signal.name + predicate + " foreach (e => if (e != outer." + signal.pd.getReadMethod.getName + ") outer." + 
+                      NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
+              p.printlnNP((if (v.writeMethodIsVararg) "e:_*"
+                           else "e") + "))")
+            case Val(_) =>
+          }
         }
-        ps.println("\t\t\t\t\tcase _ =>") //ignore unknown properties
-        ps.println("\t\t\t\t}")
-        ps.println("\t\t\t}")
-        ps.println("\t\t})")
+        p.println()
+        
+        //Check for addPropertyChangeListener support, in which case
+        //registration for the signals of this wrapper is added
+        if (wrapper.hasPropertyChangeListener) {
+          p.println("addPropertyChangeListener(new java.beans.PropertyChangeListener {")
+          p.inBlock {
+            p.println("def propertyChange(evt: java.beans.PropertyChangeEvent) {")
+            p.inBlock {
+              p.println("def cast[R](a: Any) = a.asInstanceOf[R]")
+              p.println("evt.getPropertyName match {")
+              p.inBlock {
+                for (signal <- wrapper.signals) {
+                  p.println("case \"" + signal.name + "\" => " + signal.name + "() = cast(evt.getNewValue)")
+                }
+                p.println("case _ =>") //ignore unknown properties
+              }; p.println("}")
+            }; p.println("}")
+          }; p.println("})")
+        }
       }
         
-        
-      ps.println("\t}")
-      ps.println()
+      p.println("}")
+      p.println()
       
       //define the field signals
-      ps.print("\t")
-      if (hasDeps) ps.print("override ") 
-      ps.println("lazy val signals = new Signals {}")
+      p.println((if (hasDeps) "override " else "") + "lazy val signals = new Signals {}")
     }
     
     
-    def writeStreams(wrapper: Wrapper, predicate: String, hasDeps: Boolean, ps: PrintStream) {
-      ps.println("\ttrait EventStreams" + (if (hasDeps) " extends super.EventStreams" else "") + " {")
+    def writeStreams(wrapper: Wrapper, predicate: String, hasDeps: Boolean, p: Printer) {
+      p.println("trait EventStreams" + (if (hasDeps) " extends super.EventStreams" else "") + " {")
       
-      if(!hasDeps) ps.println("\t\tclass ESource[T] extends EventSource[T]")
+      p.inBlock {
+        if(!hasDeps) p.println("class ESource[T] extends EventSource[T]")
       
-      for (event <- wrapper.streams) {
-        //create the object containing the streams
-        val eventSetDescriptor = event.eventSetDescriptor
-        val descriptors = eventSetDescriptor.getListenerMethodDescriptors
-        def writeEventSource(prefix: String, descr: MethodDescriptor) {
-          ps.println(prefix + "val " + descr.getName + " = new ESource[" + descr.getMethod.getParameterTypes()(0).getName + "]")
-        }
-        var prefix = "EventStreams.this."
-        if (descriptors.length == 1) {
-          writeEventSource("\t\t", descriptors(0))
-        } else {
-          prefix = prefix + event.name + "."
-          ps.println("\t\tobject " + event.name + " {")
-          for (descriptor <- descriptors) {
-            writeEventSource("\t\t\t", descriptor)
+        for (event <- wrapper.streams) {
+          //create the object containing the streams
+          val eventSetDescriptor = event.eventSetDescriptor
+          val descriptors = eventSetDescriptor.getListenerMethodDescriptors
+          def writeEventSource(descr: MethodDescriptor) {
+            p.println("val " + descr.getName + " = new ESource[" + descr.getMethod.getParameterTypes()(0).getName + "]")
           }
-          ps.println("\t\t}")
-        }
+          var prefix = "EventStreams.this."
+          if (descriptors.length == 1) {
+            writeEventSource(descriptors(0))
+          } else {
+            prefix = prefix + event.name + "."
+            p.println("object " + event.name + " {")
+            for (descriptor <- descriptors) {
+              p inBlock writeEventSource(descriptor)
+            }
+            p.println("}")
+          }
         
-        //register the listener
-        ps.println("\t\t" + eventSetDescriptor.getAddListenerMethod.getName + "(new " + eventSetDescriptor.getListenerType.getName + " {")
-        for (descr <- descriptors) {
-          ps.print("\t\t\tdef " + descr.getName + "(evt: " + descr.getMethod.getParameterTypes()(0).getName + ") {")
-          ps.println(prefix + descr.getName + ".fire(evt)}")
+          //register the listener
+          p.println(eventSetDescriptor.getAddListenerMethod.getName + "(new " + eventSetDescriptor.getListenerType.getName + " {")
+          p.inBlock {
+            for (descr <- descriptors) {
+              p.print("def " + descr.getName + "(evt: " + descr.getMethod.getParameterTypes()(0).getName + ") {")
+              p.printlnNP(prefix + descr.getName + ".fire(evt)}")
+            }
+          }; p.println("})")
         }
-        ps.println("\t\t})")
-      }
-      ps.println("\t}")
-      ps.println()
+      }; p.println("}")
+      p.println()
       
       //define the field events
-      ps.print("\t")
-      if (hasDeps) ps.print("override ") 
-      ps.println("lazy val events = new EventStreams {}")
+      p.println((if (hasDeps) "override " else "") + "lazy val events = new EventStreams {}")
     }
   }
 
+  case class Wrapper(peer: Class[_]) {
+    var dependencies: Seq[Wrapper] = Vector.empty
+    var signals: Seq[Signal] = Vector.empty
+    var streams: Seq[EventStream] = Vector.empty
+    def name = peer.getSimpleName + "Reactive"
+      
+    def alreadyDepends(w: Wrapper): Boolean = {
+      dependencies find (w2 => w == w2 || w2.alreadyDepends(w)) match {
+        case Some(_) => true
+        case None => false
+      }
+    }
+    def alreadyInherits(s: Named): Boolean = {
+      val seqToInspect = s match {
+        case _: Signal => (_: Wrapper).signals
+        case _: EventStream => (_: Wrapper).streams
+      }
+      dependencies find (w => seqToInspect(w).contains(s) || w.alreadyInherits(s)) match {
+        case Some(_) => true
+        case None => false
+      }
+    }
+      
+    def traverse(f: Wrapper => Unit) {
+      def traverse(w: Wrapper, f: Wrapper => Unit) {
+        f(w)
+        w.dependencies foreach (traverse(_, f))
+      }
+      for (d <- dependencies) traverse(d, f)
+    }
+      
+    lazy val hasPropertyChangeListener: Boolean = 
+      try {
+        val m = peer.getMethod("addPropertyChangeListener", classOf[java.beans.PropertyChangeListener])
+        true
+      } catch {case ex: NoSuchMethodException => false}
+//      def linearDependencies: Seq[Wrapper] = dependencies flatMap (w => w +: w.linearDependencies)
+  }
+    
+  sealed trait Named {
+    def name: String
+  }
+    
+  //Signal definition
+  object Signal {
+    def apply(pd: PropertyDescriptor) = if (pd.getWriteMethod == null) Val(pd) else Var(pd)
+  }
+  sealed abstract class Signal(val prefix: String) extends Named {
+    def pd: PropertyDescriptor
+    lazy val name = pd.getName
+    override def toString = prefix + "(" + name + ")"
+    def immutable: Boolean
+    def mutable = !immutable
+    override def equals(that: Any) = that match {
+      case s: Signal => s.name == name
+      case _ => false
+    }
+  }
+  case class Val(pd: PropertyDescriptor) extends Signal("Val") {val immutable = true}
+  case class Var(pd: PropertyDescriptor) extends Signal("Var") {
+    val immutable = false
+    def writeMethodIsVararg: Boolean = {
+      pd.getWriteMethod.isVarArgs || (pd match {
+          case ai: AdditionalInfo => ai.writeMethodIsVararg
+          case _ => false
+        })
+    }
+  }
+  //EventStrams definition
+  case class EventStream(eventSetDescriptor: EventSetDescriptor) extends Named {
+    lazy val name = eventSetDescriptor.getName
+    override def equals(that: Any) = that match {
+      case es: EventStream => es.name == name
+      case _ => false
+    }
+  }
+  
+  /**
+   * A printer class to abstract indentation handling.
+   * Use inBlock to increase indent and be sure that nesting is handled
+   * properly.
+   */
+  trait Printer {
+    private var indent = 0
+    def indentPrefix = "  " * indent
+    
+    protected def printlnImpl(s: String)
+    protected def printImpl(s: String)
+    def println(s: String = "") = printlnImpl(indentPrefix + s)
+    def printlnNP(s: String = "") = printlnImpl(s)
+    def print(s: String) = printImpl(indentPrefix + s)
+    def printNP(s: String) = printImpl(s)
+    
+    def inBlock(code: => Unit) {
+      indent += 1
+      code
+      indent -= 1
+    }
+  }
 }
