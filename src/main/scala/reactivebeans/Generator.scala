@@ -102,6 +102,7 @@ object Generator {
   private class InstanceGenerator(settings: GeneratorSettings) {
     import settings._
     private var alreadyGenerated: Map[Class[_], Wrapper] = Map.empty
+    var generatedWrappers: Seq[Wrapper] = Vector.empty
     private val beanFixes = {
       settings.beanFixes flatMap ClassLister.listClasses filter {c =>
         try classOf[BeanFix].isAssignableFrom(Class.forName(c))
@@ -131,6 +132,7 @@ object Generator {
       for (lc <- loadedClasses) {
         generate(lc)
       }
+      if (settings.generateTestClasses) generateTest(generatedWrappers)
     }
     def generate(clasz: Class[_]): Wrapper = {
       alreadyGenerated.get(clasz) match {
@@ -200,6 +202,7 @@ object Generator {
           if (wrapper.signals.nonEmpty || wrapper.streams.nonEmpty) {
             println("Writing wrapper " + wrapper.peer)
             writeWrapper(wrapper) // a wrapper that adds no field is useless
+            generatedWrappers :+= wrapper
           }
           alreadyGenerated += Pair(clasz, wrapper)
           wrapper
@@ -360,6 +363,17 @@ object Generator {
       
       //define the field events
       p.println((if (hasDeps) "override " else "") + "lazy val events = new EventStreams {}")
+    }
+    
+    /**
+     * Writes a big TestFile to test properties
+     */
+    def generateTest(wrappers: Seq[Wrapper]) {
+      val testablesWrappers = wrappers filter {w => 
+        val c = w.peer
+        val mod = c.getModifiers
+        !Modifier.isAbstract(mod) && !Modifier.isInterface(mod) && Modifier.isPublic(mod)
+      }
     }
   }
 
