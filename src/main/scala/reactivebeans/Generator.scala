@@ -278,13 +278,22 @@ object Generator {
 
     def writeSignals(wrapper: Wrapper, predicate: String, hasDeps: Boolean, p: Printer) {
       p.println("trait Signals" + (if (hasDeps) " extends super.Signals" else "") + " {")
+      
+      val peerDeclaredFields = wrapper.peer.getDeclaredFields
+      
       p.inBlock {
         for (signal <- wrapper.signals) {
+          val readerMethodName = {
+            val rm = signal.pd.getReadMethod
+            if (peerDeclaredFields.find(f => f.getName == rm.getName &&
+                !Modifier.isPrivate(f.getModifiers)).isDefined) rm.getName + "()" //in order to avoid the field
+            else rm.getName
+          }
           p.println("val " + signal.name + " = " + signal.prefix + "(" +
-            "outer." + signal.pd.getReadMethod.getName + ")")
+            "outer." + readerMethodName + ")")
           signal match {
             case v@Var(_) =>
-              p.print(signal.name + predicate + " foreach (e => if (e != outer." + signal.pd.getReadMethod.getName + ") outer." +
+              p.print(signal.name + predicate + " foreach (e => if (e != outer." + readerMethodName + ") outer." +
                 NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
               p.printlnNP((if (v.writeMethodIsVararg) "e:_*"
               else "e") + "))")
@@ -334,16 +343,12 @@ object Generator {
             p.println("val " + descr.getName + " = new ESource[" + descr.getMethod.getParameterTypes()(0).getName + "]")
           }
           var prefix = "EventStreams.this."
-          if (descriptors.length == 1) {
-            writeEventSource(descriptors(0))
-          } else {
-            prefix = prefix + event.name + "."
-            p.println("object " + event.name + " {")
-            for (descriptor <- descriptors) {
-              p inBlock writeEventSource(descriptor)
-            }
-            p.println("}")
+          prefix = "EventStreams.this." + event.name + "."
+          p.println("object " + event.name + " {")
+          for (descriptor <- descriptors) {
+            p inBlock writeEventSource(descriptor)
           }
+          p.println("}")
 
           //register the listener
           p.println(eventSetDescriptor.getAddListenerMethod.getName + "(new " + eventSetDescriptor.getListenerType.getName + " {")
@@ -413,7 +418,7 @@ object Generator {
                 val rm = signal.pd.getReadMethod
                 neededObjectGenerators :+= rm.getReturnType
                 p.println(testForClassName(rm.getReturnType) + "(\"" + testName + "." + signal.name +
-                    "\", instance.signals." + signal.name +
+                  "\", instance.signals." + signal.name +
                   ", instance." + signal.pd.getWriteMethod.getName + "(_))")
               }
             }; p.println("}")
