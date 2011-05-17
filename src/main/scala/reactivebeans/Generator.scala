@@ -269,28 +269,7 @@ object Generator {
             }
           case None => ""
         }
-    def decodeClassName(c: Class[_]): String = c match {
-      case java.lang.Boolean.TYPE => "Boolean"
-      case java.lang.Byte.TYPE => "Byte"
-      case java.lang.Short.TYPE => "Short"
-      case java.lang.Character.TYPE => "Char"
-      case java.lang.Integer.TYPE => "Int"
-      case java.lang.Long.TYPE => "Long"
-      case java.lang.Float.TYPE => "Float"
-      case java.lang.Double.TYPE => "Double"
-      case _ =>
-        if (c.isArray) "Array[" + decodeClassName(c.getComponentType) + "]"
-        else if (c.isMemberClass) decodeClassName(c.getEnclosingClass) + "." + c.getSimpleName
-        else c.getName
-    }
-
-            var found = false
-            wrapper.traverse { w => if (w.signals.find(_.name == signal.name).isDefined) found = true }
-            found
-          }
-          val declaration = if (needsOverride) "override val " else "val "
-          p.println(declaration + signal.name + declaredType + " = " + signal.prefix + "(outer." + readerMethodName + ")")
-
+    
         p.inBlock {
           if (proxy) {
             val typeParams = wrapper.peer.getTypeParameters
@@ -385,20 +364,20 @@ object Generator {
     }
   }
 
-  def decodeClassName(c: Class[_]): String = c match {
-    case java.lang.Boolean.TYPE => "Boolean"
-    case java.lang.Byte.TYPE => "Byte"
-    case java.lang.Short.TYPE => "Short"
-    case java.lang.Character.TYPE => "Char"
-    case java.lang.Integer.TYPE => "Int"
-    case java.lang.Long.TYPE => "Long"
-    case java.lang.Float.TYPE => "Float"
-    case java.lang.Double.TYPE => "Double"
-    case _ =>
-      if (c.isArray) "Array[" + decodeClassName(c.getComponentType) + "]"
-      else if (c.isMemberClass) c.getEnclosingClass.getName + "." + c.getSimpleName
-      else c.getName
-  }
+def decodeClassName(c: Class[_]): String = c match {
+      case java.lang.Boolean.TYPE => "Boolean"
+      case java.lang.Byte.TYPE => "Byte"
+      case java.lang.Short.TYPE => "Short"
+      case java.lang.Character.TYPE => "Char"
+      case java.lang.Integer.TYPE => "Int"
+      case java.lang.Long.TYPE => "Long"
+      case java.lang.Float.TYPE => "Float"
+      case java.lang.Double.TYPE => "Double"
+      case _ =>
+        if (c.isArray) "Array[" + decodeClassName(c.getComponentType) + "]"
+        else if (c.isMemberClass) decodeClassName(c.getEnclosingClass) + "." + c.getSimpleName
+        else c.getName
+    }
 
   case class Wrapper(peer: Class[_]) {
     var dependencies: Seq[Wrapper] = Vector.empty

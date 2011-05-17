@@ -15,7 +15,7 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
     val peerDeclaredFields = wrapper.peer.getDeclaredFields
 
     val callOnInstance = instance + "."
-    
+
     p.inBlock {
       for (signal <- wrapper.signals) {
         val readerMethodName = {
@@ -24,16 +24,31 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
             !Modifier.isPrivate(f.getModifiers)).isDefined) rm.getName + "()" //in order to avoid the field
           else rm.getName
         }
-        p.println("val " + signal.name + " = " + signal.prefix + "(" +
-          callOnInstance + readerMethodName + ")")
-        signal match {
-          case v@Var(_) =>
-            p.print(signal.name + predicate + " foreach (e => if (e != " + callOnInstance + readerMethodName + ") " + callOnInstance +
-              NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
-            p.printlnNP((if (v.writeMethodIsVararg) "e:_*"
-            else "e") + "))")
-          case Val(_) =>
+
+        val overrides = {
+          var res = false
+          wrapper.traverse { w =>
+            if (w.signals find (_.name == signal.name) isDefined) res = true
+          }
+          res
         }
+        val signalDeclaration = if (overrides) "override lazy val " else "lazy val "
+        val signalType = if (signal.immutable) ": Signal[" + decodeClassName(signal.pd.getReadMethod.getReturnType) + "]" else ""
+        p.print(signalDeclaration + signal.name + signalType + " = ");
+        if (signal.immutable) {
+          p.printlnNP("Var(" + callOnInstance + readerMethodName + ")") //even Vals are implemented as Vars, because readonly properties might actually mutate
+        } else {
+          p.printlnNP("{")
+          p.inBlock {
+            p.println("val res = Var(" + callOnInstance + readerMethodName + ")")
+            p.print("res" + predicate + " foreach (e => if (e != " + callOnInstance + readerMethodName + ") " + callOnInstance +
+              NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
+            p.printlnNP((if (signal.asInstanceOf[Var].writeMethodIsVararg) "e:_*"
+            else "e") + "))")
+            p.println("res")
+          }; p.println("}")
+        }
+
       }
       p.println()
 
@@ -44,11 +59,11 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
         p.inBlock {
           p.println("def propertyChange(evt: java.beans.PropertyChangeEvent) {")
           p.inBlock {
-            p.println("def cast[R](a: Any) = a.asInstanceOf[R]")
+            p.println("def assign[T](s: Signal[T], value: Any) = s match {case v: Var[_] => v.asInstanceOf[Var[T]].value = value.asInstanceOf[T]; case _ =>}")
             p.println("evt.getPropertyName match {")
             p.inBlock {
               for (signal <- wrapper.signals) {
-                p.println("case \"" + signal.name + "\" => " + signal.name + "() = cast(evt.getNewValue)")
+                p.println("case \"" + signal.name + "\" => assign(" + signal.name + ", evt.getNewValue)")
               }
               p.println("case _ =>") //ignore unknown properties
             }; p.println("}")
