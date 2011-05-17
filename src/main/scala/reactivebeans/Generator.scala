@@ -101,7 +101,7 @@ object Generator {
     import settings._
     private var alreadyGenerated: Map[Class[_], Wrapper] = Map.empty
     var generatedWrappers: Seq[Wrapper] = Vector.empty
-    private val beanFixes = {
+    val beanFixes = {
       settings.beanFixes flatMap ClassLister.listClasses filter { c =>
         try classOf[BeanFix].isAssignableFrom(Class.forName(c))
         catch {
@@ -109,7 +109,7 @@ object Generator {
             println("WARNING: BeanFix" + c + " not found")
             false
         }
-      } map (Class.forName(_).newInstance.asInstanceOf[BeanFix])
+      } map (Class.forName(_).asInstanceOf[Class[BeanFix]])
     }
     /**
      * Performs simple filtering of selected classes and delegates actual work to per class generate
@@ -205,9 +205,10 @@ object Generator {
           wrapper.signals = sanitize(_.signals)
           wrapper.streams = sanitize(_.streams)
 
-          if (wrapper.signals.nonEmpty || wrapper.streams.nonEmpty) {
+          if (wrapper.signals.nonEmpty || wrapper.streams.nonEmpty) { // a wrapper that adds nothing is useless
             println("Writing wrapper " + wrapper.peer)
-            writeWrapper(wrapper) // a wrapper that adds no field is useless
+            writeWrapper(wrapper, false)
+            writeWrapper(wrapper, true)
             generatedWrappers :+= wrapper
           }
           alreadyGenerated += Pair(clasz, wrapper)
@@ -218,9 +219,9 @@ object Generator {
     /**
      * Writes the scala file
      */
-    def writeWrapper(wrapper: Wrapper) {
+    def writeWrapper(wrapper: Wrapper, proxy: Boolean) {
       baseFolder.mkdirs
-      val destFile = new File(baseFolder, wrapper.name + ".scala")
+      val destFile = new File(baseFolder, wrapper.name + (if (proxy) "Proxy" else "") + ".scala")
 
       val p = Printer(new PrintStream(destFile))
 
@@ -237,11 +238,17 @@ object Generator {
           if (w.streams.nonEmpty) hasStreamDeps = true
         }
 
-        p.println("trait " + wrapper.name + wrapper.parameters + " extends " + wrapper.peer.getName + wrapper.parameters +
-          (if (hasDeps) " with " + wrapper.dependencies.map(_.name).mkString(" with ")
-          else " with Observing")
-          + " { outer =>")
-        val instance = "outer"
+        if (proxy) {
+          p.println("trait " + wrapper.name + "Proxy" +
+            (if (hasDeps) " extends " + wrapper.dependencies.head.name + "Proxy " + wrapper.dependencies.drop(1).map("with " + _.name + "Proxy").mkString
+            else " extends Observing") +
+            " {")
+        } else {
+          p.println("trait " + wrapper.name + wrapper.parameters + " extends " + wrapper.peer.getName + wrapper.parameters +
+            (if (hasDeps) " with " + wrapper.dependencies.map(_.name).mkString(" with ")
+            else " with Observing") + " {")
+        }
+        val instance = if (proxy) "peer" else "outer"
         val callOnInstance = instance + "."
 
         //calculate predicate
@@ -263,13 +270,30 @@ object Generator {
             }
           case None => ""
         }
+
         p.inBlock {
+          if (proxy) {
+            val typeParams = wrapper.peer.getTypeParameters
+            val params = if (typeParams.nonEmpty) typeParams.map(p => "_").mkString("[", ", ", "]") else ""
+            if (hasDeps) p.println("override def peer: " + decodeClassName(wrapper.peer) + params)
+            else p.println("def peer: " + decodeClassName(wrapper.peer) + params)
+          } else {
+            p.println("outer =>")
+          }
+
           if (wrapper.signals.nonEmpty) new SignalsWrapperPart(wrapper, instance, predicate, hasSignalDeps, p).write()
           p.println()
-          if (wrapper.streams.nonEmpty) new EventsWrapperPart(wrapper, instance, predicate, hasSignalDeps, p).write()
+          if (wrapper.streams.nonEmpty) new EventsWrapperPart(wrapper, instance, predicate, hasStreamDeps, p).write()
           p.println()
-          val arg = (wrapper, p)
-          beanFixes filter (_.isDefinedAt(arg)) foreach (_(arg))
+
+          //BeanFixes
+          val fixes = beanFixes map (_.getConstructor(classOf[Generator.Wrapper],
+            classOf[String],
+            classOf[String],
+            classOf[Boolean],
+            classOf[Generator.Printer]).newInstance(wrapper, instance, predicate, hasDeps: java.lang.Boolean, p))
+
+          fixes filter (_.isDefinedAt(wrapper.peer)) foreach (_.write())
         }
         p.println()
         p.println("}")
@@ -300,19 +324,6 @@ object Generator {
 
         var neededObjectGenerators: Seq[Class[_]] = Vector.empty
 
-        def decodeClassName(c: Class[_]): String = c match {
-          case java.lang.Boolean.TYPE => "Boolean"
-          case java.lang.Byte.TYPE => "Byte"
-          case java.lang.Short.TYPE => "Short"
-          case java.lang.Character.TYPE => "Char"
-          case java.lang.Integer.TYPE => "Int"
-          case java.lang.Long.TYPE => "Long"
-          case java.lang.Float.TYPE => "Float"
-          case java.lang.Double.TYPE => "Double"
-          case _ =>
-            if (c.isArray) "Array[" + decodeClassName(c.getComponentType) + "]"
-            else c.getName
-        }
         def testForClassName(c: Class[_]) = "test" + decodeClassName(c).replaceAll("[\\[\\.]", "_").replaceAll("\\]", "")
 
         p.println("object Tests {"); p.inBlock {
@@ -352,6 +363,21 @@ object Generator {
         p.close()
       }
     }
+  }
+
+  def decodeClassName(c: Class[_]): String = c match {
+    case java.lang.Boolean.TYPE => "Boolean"
+    case java.lang.Byte.TYPE => "Byte"
+    case java.lang.Short.TYPE => "Short"
+    case java.lang.Character.TYPE => "Char"
+    case java.lang.Integer.TYPE => "Int"
+    case java.lang.Long.TYPE => "Long"
+    case java.lang.Float.TYPE => "Float"
+    case java.lang.Double.TYPE => "Double"
+    case _ =>
+      if (c.isArray) "Array[" + decodeClassName(c.getComponentType) + "]"
+      else if (c.isMemberClass) c.getEnclosingClass.getName + "." + c.getSimpleName
+      else c.getName
   }
 
   case class Wrapper(peer: Class[_]) {
