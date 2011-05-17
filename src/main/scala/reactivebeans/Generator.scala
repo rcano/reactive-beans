@@ -101,7 +101,7 @@ object Generator {
     import settings._
     private var alreadyGenerated: Map[Class[_], Wrapper] = Map.empty
     var generatedWrappers: Seq[Wrapper] = Vector.empty
-    private val beanFixes = {
+    val beanFixes = {
       settings.beanFixes flatMap ClassLister.listClasses filter { c =>
         try classOf[BeanFix].isAssignableFrom(Class.forName(c))
         catch {
@@ -109,7 +109,7 @@ object Generator {
             println("WARNING: BeanFix" + c + " not found")
             false
         }
-      } map (Class.forName(_).newInstance.asInstanceOf[BeanFix])
+      } map (Class.forName(_).asInstanceOf[Class[BeanFix]])
     }
     /**
      * Performs simple filtering of selected classes and delegates actual work to per class generate
@@ -204,9 +204,10 @@ object Generator {
           wrapper.signals = sanitize(_.signals)
           wrapper.streams = sanitize(_.streams)
 
-          if (wrapper.signals.nonEmpty || wrapper.streams.nonEmpty) {
+          if (wrapper.signals.nonEmpty || wrapper.streams.nonEmpty) { // a wrapper that adds nothing is useless
             println("Writing wrapper " + wrapper.peer)
-            writeWrapper(wrapper) // a wrapper that adds no field is useless
+            writeWrapper(wrapper, false)
+            writeWrapper(wrapper, true)
             generatedWrappers :+= wrapper
           }
           alreadyGenerated += Pair(clasz, wrapper)
@@ -217,9 +218,9 @@ object Generator {
     /**
      * Writes the scala file
      */
-    def writeWrapper(wrapper: Wrapper) {
+    def writeWrapper(wrapper: Wrapper, proxy: Boolean) {
       baseFolder.mkdirs
-      val destFile = new File(baseFolder, wrapper.name + ".scala")
+      val destFile = new File(baseFolder, wrapper.name + (if (proxy) "Proxy" else "") + ".scala")
 
       val p = Printer(new PrintStream(destFile))
 
@@ -236,10 +237,18 @@ object Generator {
           if (w.streams.nonEmpty) hasStreamDeps = true
         }
 
-        p.println("trait " + wrapper.name + wrapper.parameters + " extends " + wrapper.peer.getName + wrapper.parameters +
-          (if (hasDeps) " with " + wrapper.dependencies.map(_.name).mkString(" with ")
-          else " with Observing")
-          + " { outer =>")
+        if (proxy) {
+          p.println("trait " + wrapper.name + "Proxy" +
+            (if (hasDeps) " extends " + wrapper.dependencies.head.name + "Proxy " + wrapper.dependencies.drop(1).map("with " + _.name + "Proxy").mkString
+            else " extends Observing") +
+            " {")
+        } else {
+          p.println("trait " + wrapper.name + wrapper.parameters + " extends " + wrapper.peer.getName + wrapper.parameters +
+            (if (hasDeps) " with " + wrapper.dependencies.map(_.name).mkString(" with ")
+            else " with Observing") + " {")
+        }
+        val instance = if (proxy) "peer" else "outer"
+        val callOnInstance = instance + "."
 
         //calculate predicate
         val predicate = specialPredicate match {
@@ -249,7 +258,7 @@ object Generator {
               case Some(m) =>
                 val methodName = m.group(1)
                 if (wrapper.peer.getMethods find (_.getName == methodName) isDefined) {
-                  ".change.takeWhile{e => " + cond.replaceAll("_\\.", "outer.") + "}"
+                  ".change.takeWhile{e => " + cond.replaceAll("_\\.", callOnInstance) + "}"
                 } else {
                   err
                   ""
@@ -260,21 +269,6 @@ object Generator {
             }
           case None => ""
         }
-        p.inBlock {
-          if (wrapper.signals.nonEmpty) writeSignals(wrapper, predicate, hasSignalDeps, p)
-          p.println()
-          if (wrapper.streams.nonEmpty) writeStreams(wrapper, predicate, hasStreamDeps, p)
-          p.println()
-          val arg = (wrapper, p)
-          beanFixes filter (_.isDefinedAt(arg)) foreach (_(arg))
-        }
-        p.println()
-        p.println("}")
-      } finally {
-        p.close()
-      }
-    }
-
     def decodeClassName(c: Class[_]): String = c match {
       case java.lang.Boolean.TYPE => "Boolean"
       case java.lang.Byte.TYPE => "Byte"
@@ -290,100 +284,42 @@ object Generator {
         else c.getName
     }
 
-    def writeSignals(wrapper: Wrapper, predicate: String, hasDeps: Boolean, p: Printer) {
-      p.println("trait Signals" + (if (hasDeps) " extends super.Signals" else "") + " {")
-
-      val peerDeclaredFields = wrapper.peer.getDeclaredFields
-
-      p.inBlock {
-        for (signal <- wrapper.signals) {
-          val readerMethodName = {
-            val rm = signal.pd.getReadMethod
-            if (peerDeclaredFields.find(f => f.getName == rm.getName &&
-              !Modifier.isPrivate(f.getModifiers)).isDefined) rm.getName + "()" //in order to avoid the field
-            else rm.getName
-          }
-          val declaredType = if (signal.immutable) ": Signal[" + decodeClassName(signal.pd.getReadMethod.getReturnType) + "]" else ""
-          val needsOverride = {
             var found = false
             wrapper.traverse { w => if (w.signals.find(_.name == signal.name).isDefined) found = true }
             found
           }
           val declaration = if (needsOverride) "override val " else "val "
           p.println(declaration + signal.name + declaredType + " = " + signal.prefix + "(outer." + readerMethodName + ")")
-          signal match {
-            case v @ Var(_) =>
-              p.print(signal.name + predicate + " foreach (e => if (e != outer." + readerMethodName + ") outer." +
-                NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
-              p.printlnNP((if (v.writeMethodIsVararg) "e:_*"
-              else "e") + "))")
-            case Val(_) =>
+
+        p.inBlock {
+          if (proxy) {
+            val typeParams = wrapper.peer.getTypeParameters
+            val params = if (typeParams.nonEmpty) typeParams.map(p => "_").mkString("[", ", ", "]") else ""
+            if (hasDeps) p.println("override def peer: " + decodeClassName(wrapper.peer) + params)
+            else p.println("def peer: " + decodeClassName(wrapper.peer) + params)
+          } else {
+            p.println("outer =>")
           }
+
+          if (wrapper.signals.nonEmpty) new SignalsWrapperPart(wrapper, instance, predicate, hasSignalDeps, p).write()
+          p.println()
+          if (wrapper.streams.nonEmpty) new EventsWrapperPart(wrapper, instance, predicate, hasStreamDeps, p).write()
+          p.println()
+
+          //BeanFixes
+          val fixes = beanFixes map (_.getConstructor(classOf[Generator.Wrapper],
+            classOf[String],
+            classOf[String],
+            classOf[Boolean],
+            classOf[Generator.Printer]).newInstance(wrapper, instance, predicate, hasDeps: java.lang.Boolean, p))
+
+          fixes filter (_.isDefinedAt(wrapper.peer)) foreach (_.write())
         }
         p.println()
-
-        //Check for addPropertyChangeListener support, in which case
-        //registration for the signals of this wrapper is added
-        if (wrapper.hasPropertyChangeListener) {
-          p.println("addPropertyChangeListener(new java.beans.PropertyChangeListener {")
-          p.inBlock {
-            p.println("def propertyChange(evt: java.beans.PropertyChangeEvent) {")
-            p.inBlock {
-              p.println("def cast[R](a: Any) = a.asInstanceOf[R]")
-              p.println("evt.getPropertyName match {")
-              p.inBlock {
-                for (signal <- wrapper.signals if signal.mutable) {
-                  p.println("case \"" + signal.name + "\" => " + signal.name + "() = cast(evt.getNewValue)")
-                }
-                p.println("case _ =>") //ignore unknown properties
-              }; p.println("}")
-            }; p.println("}")
-          }; p.println("})")
-        }
+        p.println("}")
+      } finally {
+        p.close()
       }
-
-      p.println("}")
-      p.println()
-
-      //define the field signals
-      p.println((if (hasDeps) "override " else "") + "lazy val signals = new Signals {}")
-    }
-
-    def writeStreams(wrapper: Wrapper, predicate: String, hasDeps: Boolean, p: Printer) {
-      p.println("trait EventStreams" + (if (hasDeps) " extends super.EventStreams" else "") + " {")
-
-      p.inBlock {
-        if (!hasDeps) p.println("class ESource[T] extends EventSource[T]")
-
-        for (event <- wrapper.streams) {
-          //create the object containing the streams
-          val eventSetDescriptor = event.eventSetDescriptor
-          val descriptors = eventSetDescriptor.getListenerMethodDescriptors
-          def writeEventSource(descr: MethodDescriptor) {
-            p.println("val " + descr.getName + " = new ESource[" + descr.getMethod.getParameterTypes()(0).getName + "]")
-          }
-          var prefix = "EventStreams.this."
-          prefix = "EventStreams.this." + event.name + "."
-          p.println("object " + event.name + " {")
-          for (descriptor <- descriptors) {
-            p inBlock writeEventSource(descriptor)
-          }
-          p.println("}")
-
-          //register the listener
-          p.println(eventSetDescriptor.getAddListenerMethod.getName + "(new " + eventSetDescriptor.getListenerType.getName + " {")
-          p.inBlock {
-            for (descr <- descriptors) {
-              p.print("def " + descr.getName + "(evt: " + descr.getMethod.getParameterTypes()(0).getName + ") {")
-              p.printlnNP(prefix + descr.getName + ".fire(evt)}")
-            }
-          }; p.println("})")
-        }
-      }; p.println("}")
-      p.println()
-
-      //define the field events
-      p.println((if (hasDeps) "override " else "") + "lazy val events = new EventStreams {}")
     }
 
     /**
@@ -447,6 +383,21 @@ object Generator {
         p.close()
       }
     }
+  }
+
+  def decodeClassName(c: Class[_]): String = c match {
+    case java.lang.Boolean.TYPE => "Boolean"
+    case java.lang.Byte.TYPE => "Byte"
+    case java.lang.Short.TYPE => "Short"
+    case java.lang.Character.TYPE => "Char"
+    case java.lang.Integer.TYPE => "Int"
+    case java.lang.Long.TYPE => "Long"
+    case java.lang.Float.TYPE => "Float"
+    case java.lang.Double.TYPE => "Double"
+    case _ =>
+      if (c.isArray) "Array[" + decodeClassName(c.getComponentType) + "]"
+      else if (c.isMemberClass) c.getEnclosingClass.getName + "." + c.getSimpleName
+      else c.getName
   }
 
   case class Wrapper(peer: Class[_]) {
