@@ -163,9 +163,8 @@ object Generator {
           if (propertyDescriptors != null) {
             for (
               pd <- propertyDescriptors if pd.isBound;
-              rm = pd.getReadMethod if rm != null;
-              wm = pd.getWriteMethod if wm != null
-            ) { //only mutable properties are generated
+              rm = pd.getReadMethod if rm != null
+            ) {
               val rmdc = rm.getDeclaringClass
               if (rmdc != clasz) {
                 val dep = generate(rmdc)
@@ -276,23 +275,44 @@ object Generator {
       }
     }
 
+    def decodeClassName(c: Class[_]): String = c match {
+      case java.lang.Boolean.TYPE => "Boolean"
+      case java.lang.Byte.TYPE => "Byte"
+      case java.lang.Short.TYPE => "Short"
+      case java.lang.Character.TYPE => "Char"
+      case java.lang.Integer.TYPE => "Int"
+      case java.lang.Long.TYPE => "Long"
+      case java.lang.Float.TYPE => "Float"
+      case java.lang.Double.TYPE => "Double"
+      case _ =>
+        if (c.isArray) "Array[" + decodeClassName(c.getComponentType) + "]"
+        else if (c.isMemberClass) decodeClassName(c.getEnclosingClass) + "." + c.getSimpleName
+        else c.getName
+    }
+
     def writeSignals(wrapper: Wrapper, predicate: String, hasDeps: Boolean, p: Printer) {
       p.println("trait Signals" + (if (hasDeps) " extends super.Signals" else "") + " {")
-      
+
       val peerDeclaredFields = wrapper.peer.getDeclaredFields
-      
+
       p.inBlock {
         for (signal <- wrapper.signals) {
           val readerMethodName = {
             val rm = signal.pd.getReadMethod
             if (peerDeclaredFields.find(f => f.getName == rm.getName &&
-                !Modifier.isPrivate(f.getModifiers)).isDefined) rm.getName + "()" //in order to avoid the field
+              !Modifier.isPrivate(f.getModifiers)).isDefined) rm.getName + "()" //in order to avoid the field
             else rm.getName
           }
-          p.println("val " + signal.name + " = " + signal.prefix + "(" +
-            "outer." + readerMethodName + ")")
+          val declaredType = if (signal.immutable) ": Signal[" + decodeClassName(signal.pd.getReadMethod.getReturnType) + "]" else ""
+          val needsOverride = {
+            var found = false
+            wrapper.traverse { w => if (w.signals.find(_.name == signal.name).isDefined) found = true }
+            found
+          }
+          val declaration = if (needsOverride) "override val " else "val "
+          p.println(declaration + signal.name + declaredType + " = " + signal.prefix + "(outer." + readerMethodName + ")")
           signal match {
-            case v@Var(_) =>
+            case v @ Var(_) =>
               p.print(signal.name + predicate + " foreach (e => if (e != outer." + readerMethodName + ") outer." +
                 NameTransformer.decode(signal.pd.getWriteMethod.getName) + "(")
               p.printlnNP((if (v.writeMethodIsVararg) "e:_*"
@@ -312,7 +332,7 @@ object Generator {
               p.println("def cast[R](a: Any) = a.asInstanceOf[R]")
               p.println("evt.getPropertyName match {")
               p.inBlock {
-                for (signal <- wrapper.signals) {
+                for (signal <- wrapper.signals if signal.mutable) {
                   p.println("case \"" + signal.name + "\" => " + signal.name + "() = cast(evt.getNewValue)")
                 }
                 p.println("case _ =>") //ignore unknown properties
@@ -388,19 +408,6 @@ object Generator {
 
         var neededObjectGenerators: Seq[Class[_]] = Vector.empty
 
-        def decodeClassName(c: Class[_]): String = c match {
-          case java.lang.Boolean.TYPE => "Boolean"
-          case java.lang.Byte.TYPE => "Byte"
-          case java.lang.Short.TYPE => "Short"
-          case java.lang.Character.TYPE => "Char"
-          case java.lang.Integer.TYPE => "Int"
-          case java.lang.Long.TYPE => "Long"
-          case java.lang.Float.TYPE => "Float"
-          case java.lang.Double.TYPE => "Double"
-          case _ =>
-            if (c.isArray) "Array[" + decodeClassName(c.getComponentType) + "]"
-            else c.getName
-        }
         def testForClassName(c: Class[_]) = "test" + decodeClassName(c).replaceAll("[\\[\\.]", "_").replaceAll("\\]", "")
 
         p.println("object Tests {"); p.inBlock {
@@ -501,7 +508,7 @@ object Generator {
     def immutable: Boolean
     def mutable = !immutable
     override def equals(that: Any) = that match {
-      case s: Signal => s.name == name
+      case s: Signal => s.name == name && s.immutable == immutable
       case _ => false
     }
   }
