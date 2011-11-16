@@ -27,7 +27,7 @@ class JComboBoxBeanFix(wrapper: Generator.Wrapper,
                        predicate: String,
                        hasDeps: Boolean,
                        p: Generator.Printer) extends BeanFix(wrapper, instance, predicate, hasDeps, p) {
-  def isDefinedAt(w: Class[_]) = classOf[JComboBox] == w
+  def isDefinedAt(w: Class[_]) = w.getName == "javax.swing.JComboBox"
   def write() {
     p.println("//Fix for the properties related to items")
     p.println("events.item.itemStateChanged foreach {e =>"); p.inBlock {
@@ -41,7 +41,7 @@ class JListBeanFix(wrapper: Generator.Wrapper,
                    predicate: String,
                    hasDeps: Boolean,
                    p: Generator.Printer) extends BeanFix(wrapper, instance, predicate, hasDeps, p) {
-  def isDefinedAt(w: Class[_]) = classOf[JList] == w
+  def isDefinedAt(w: Class[_]) = w.getName == "javax.swing.JList"
   def write() {
     p.println("//Fix for the properties related to indices")
     p.println("events.listSelection.valueChanged foreach {e =>"); p.inBlock {
@@ -77,3 +77,4 @@ class JSliderAndJSpinnerBeanFix(wrapper: Generator.Wrapper,
     }; p.println("}")
   }
 }
+

@@ -34,7 +34,7 @@ object Generator {
       "\t\t\t\t\tin which case the ScalaIntrospector will be used.\n" +
       "\t\t\t\tjava: Will always force obtaining the BeanInfo via java.beans.Introspector\n" +
       "\t\t\t\t\tuseful when you have created BeanInfo object for your scala class and want\n" +
-      "\t\t\t\t\tthe wrapper based on those." +
+      "\t\t\t\t\tthe wrapper based on those.\n" +
       "\t\t\t\tscala: Will always force obtaining the BeanInfo via ScalaIntrospector,\n" +
       "\t\t\t\t\tit is here for completeness, but probably will never be used.")
     println("\t --generate-test: Generate test classes to test the correct notification of properties for" +
