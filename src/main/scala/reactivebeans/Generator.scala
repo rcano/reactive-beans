@@ -433,7 +433,7 @@ def decodeClassName(c: Class[_]): String = c match {
   }
   sealed abstract class Signal(val prefix: String) extends Named {
     def pd: PropertyDescriptor
-    lazy val name = pd.getName
+    lazy val name = "`" + pd.getName + "`"
     override def toString = prefix + "(" + name + ")"
     def immutable: Boolean
     def mutable = !immutable
