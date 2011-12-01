@@ -9,4 +9,4 @@ libraryDependencies <++= scalaVersion {sv => Seq(
   "org.scala-lang" % "scalap" % sv
 )}
 
-fork := true
+fork := false

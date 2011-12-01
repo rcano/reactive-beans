@@ -9,3 +9,4 @@ libraryDependencies <++= scalaVersion {sv => Seq(
   "cc.co.scala-reactive" %% "reactive-core" % "0.2-SNAPSHOT"
 )}
 
+retrieveManaged := true

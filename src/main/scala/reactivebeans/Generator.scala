@@ -5,7 +5,7 @@ package reactivebeans
  */
 import java.beans.{ Introspector, PropertyDescriptor, EventSetDescriptor, MethodDescriptor }
 import java.io.{ File, PrintStream }
-import java.lang.reflect.Modifier
+import java.lang.reflect.{Modifier, Type, TypeVariable, ParameterizedType, WildcardType}
 import scala.reflect.NameTransformer
 
 /**
@@ -238,7 +238,7 @@ object Generator {
         }
 
         if (proxy) {
-          p.println("trait " + wrapper.name + "Proxy" +
+          p.println("trait " + wrapper.name + "Proxy" + wrapper.parameters +
             (if (hasDeps) " extends " + wrapper.dependencies.head.name + "Proxy " + wrapper.dependencies.drop(1).map("with " + _.name + "Proxy").mkString
             else " extends Observing") +
             " {")
@@ -272,8 +272,9 @@ object Generator {
     
         p.inBlock {
           if (proxy) {
-            val typeParams = wrapper.peer.getTypeParameters
-            val params = if (typeParams.nonEmpty) typeParams.map(p => "_").mkString("[", ", ", "]") else ""
+//            val typeParams = wrapper.peer.getTypeParameters
+//            val params = if (typeParams.nonEmpty) typeParams.map(p => "_").mkString("[", ", ", "]") else ""
+            val params = wrapper.parameters
             if (hasDeps) p.println("override def peer: " + decodeClassName(wrapper.peer) + params)
             else p.println("def peer: " + decodeClassName(wrapper.peer) + params)
           } else {
@@ -364,6 +365,14 @@ object Generator {
     }
   }
 
+def decodeType(t: Type): String = t match {
+  case c: Class[_] => decodeClassName(c)
+  case pt: ParameterizedType => 
+    decodeType(pt.getRawType()) + "[" + pt.getActualTypeArguments().map(decodeType).mkString(", ") + "]"
+  case tv: TypeVariable[_] => tv.getName
+  case wt: WildcardType => "_"
+}
+  
 def decodeClassName(c: Class[_]): String = c match {
       case java.lang.Boolean.TYPE => "Boolean"
       case java.lang.Byte.TYPE => "Byte"

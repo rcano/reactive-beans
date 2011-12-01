@@ -33,7 +33,7 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
           res
         }
         val signalDeclaration = if (overrides) "override lazy val " else "lazy val "
-        val signalType = if (signal.immutable) ": Signal[" + decodeClassName(signal.pd.getReadMethod.getReturnType) + "]" else ""
+        val signalType = if (signal.immutable) ": Signal[" + decodeType(signal.pd.getReadMethod.getGenericReturnType) + "]" else ""
         p.print(signalDeclaration + signal.name + signalType + " = ");
         if (signal.immutable) {
           p.printlnNP("Var(" + callOnInstance + readerMethodName + ")") //even Vals are implemented as Vars, because readonly properties might actually mutate
