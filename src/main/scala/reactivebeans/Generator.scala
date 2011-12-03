@@ -3,7 +3,7 @@ package reactivebeans
 /**
  * Generator is the main entry point to the reactive beans wrapper.
  */
-import java.beans.{ Introspector, PropertyDescriptor, EventSetDescriptor, MethodDescriptor }
+import java.beans.{ Introspector, BeanInfo, PropertyDescriptor, EventSetDescriptor, MethodDescriptor }
 import java.io.{ File, PrintStream }
 import java.lang.reflect.{Modifier, Type, TypeVariable, ParameterizedType, WildcardType}
 import scala.reflect.NameTransformer
@@ -134,12 +134,11 @@ object Generator {
       }
       if (settings.generateTestClasses) generateTest(generatedWrappers)
     }
-    def generate(clasz: Class[_]): Wrapper = {
+    def generate(clasz: Class[_]): Option[Wrapper] = {
       alreadyGenerated.get(clasz) match {
-        case Some(generated) => generated
+        case Some(generated) => Some(generated)
         case None =>
           println("Analysing " + clasz)
-          val wrapper = Wrapper(clasz)
 
           //Obtain a bean info
           val bi = beanGuessMode match {
@@ -149,6 +148,11 @@ object Generator {
             case BeanGuessMode.Scala => ScalaIntrospector.getBeanInfo(clasz)
             case BeanGuessMode.Java => Introspector.getBeanInfo(clasz)
           }
+          if (bi.getBeanDescriptor().isHidden()) {
+            println("\tclass is not public")
+            return None
+          }
+          val wrapper = Wrapper(clasz, bi)
 
           //          println("\tEvents:")
           //          for (evtDescr <- bi.getEventSetDescriptors) {
@@ -161,29 +165,28 @@ object Generator {
           //Analyse property descriptors
           val propertyDescriptors = bi.getPropertyDescriptors
           if (propertyDescriptors != null) {
-            for (
-              pd <- propertyDescriptors if pd.isBound;
-              rm = pd.getReadMethod if rm != null
-            ) {
-              val rmdc = rm.getDeclaringClass
-              if (rmdc != clasz) {
-                val dep = generate(rmdc)
-                if (!wrapper.alreadyDepends(dep)) wrapper.dependencies :+= dep
-              } else wrapper.signals :+= Signal(pd)
+            propertyDescriptors foreach {pd =>
+              val rm = pd.getReadMethod()
+              if (pd.isBound && rm != null) {
+                val rmdc = rm.getDeclaringClass
+                if (rmdc != clasz) {
+                  generate(rmdc) foreach { dep =>
+                    if (!wrapper.alreadyDepends(dep)) wrapper.dependencies :+= dep
+                  }
+                } else wrapper.signals :+= Signal(pd)
+              }
             }
           }
           //Analyse eventSetDescriptors, this code is repeated with the propertyDescriptor ones,
           //common stuff should be factored out
           val eventSetDescriptors = bi.getEventSetDescriptors
           if (eventSetDescriptors != null) {
-            for (
-              esd <- eventSetDescriptors;
-              alm = esd.getAddListenerMethod
-            ) {
+            for (esd <- eventSetDescriptors; alm = esd.getAddListenerMethod) {
               val rmdc = alm.getDeclaringClass
               if (rmdc != clasz) {
-                val dep = generate(rmdc)
-                if (!wrapper.alreadyDepends(dep)) wrapper.dependencies :+= dep
+                generate(rmdc) foreach { dep =>
+                  if (!wrapper.alreadyDepends(dep)) wrapper.dependencies :+= dep
+                }
               } else wrapper.streams :+= EventStream(esd)
             }
           }
@@ -194,12 +197,13 @@ object Generator {
             w2 <- wrapper.dependencies if w1 != w2;
             if w1.alreadyDepends(w2)
           ) yield w2
-          wrapper.dependencies = wrapper.dependencies diff toRemoveDeps
+          wrapper.dependencies = wrapper.dependencies filterNot toRemoveDeps.contains
 
           //Sanitize signals and events
           def sanitize[T <: Named](seqToSanitize: Wrapper => Seq[T]) = {
-            val toRemove = for (named <- seqToSanitize(wrapper) if (wrapper.alreadyInherits(named))) yield named
-            seqToSanitize(wrapper) diff toRemove
+            val seq = seqToSanitize(wrapper)
+            val toRemove = for (named <- seq if (wrapper.alreadyInherits(named))) yield named
+            (seq diff toRemove).distinct
           }
           wrapper.signals = sanitize(_.signals)
           wrapper.streams = sanitize(_.streams)
@@ -211,7 +215,7 @@ object Generator {
             generatedWrappers :+= wrapper
           }
           alreadyGenerated += Pair(clasz, wrapper)
-          wrapper
+          Some(wrapper)
       }
     }
 
@@ -238,22 +242,22 @@ object Generator {
         }
 
         if (proxy) {
-          p.println("trait " + wrapper.name + "Proxy" + wrapper.parameters +
+          p.println("trait " + wrapper.name + "Proxy" + wrapper.parametersDef +
             (if (hasDeps) " extends " + wrapper.dependencies.head.name + "Proxy " + wrapper.dependencies.drop(1).map("with " + _.name + "Proxy").mkString
             else " extends Observing") +
             " {")
         } else {
-          p.println("trait " + wrapper.name + wrapper.parameters + " extends " + wrapper.peer.getName + wrapper.parameters +
+          p.println("trait " + wrapper.name + wrapper.parametersDef + " extends " + wrapper.peer.getName + wrapper.parametersName +
             (if (hasDeps) " with " + wrapper.dependencies.map(_.name).mkString(" with ")
             else " with Observing") + " {")
         }
-        val instance = if (proxy) "peer" else "outer"
+        val instance = "outer"
         val callOnInstance = instance + "."
 
         //calculate predicate
         val predicate = specialPredicate match {
           case Some(cond) =>
-            def err = println("\tWARNING:Could not prove that " + wrapper.peer + " satisfies " + cond)
+            def err = println(Console.YELLOW + "\tWARNING:Could not prove that " + wrapper.peer + " satisfies " + cond + Console.RESET)
             "_\\.(.+)\\(?".r.findFirstMatchIn(cond) match {
               case Some(m) =>
                 val methodName = m.group(1)
@@ -272,18 +276,17 @@ object Generator {
     
         p.inBlock {
           if (proxy) {
-//            val typeParams = wrapper.peer.getTypeParameters
-//            val params = if (typeParams.nonEmpty) typeParams.map(p => "_").mkString("[", ", ", "]") else ""
-            val params = wrapper.parameters
+            val params = wrapper.parametersName
             if (hasDeps) p.println("override def peer: " + decodeClassName(wrapper.peer) + params)
             else p.println("def peer: " + decodeClassName(wrapper.peer) + params)
+            p.println("private[" + wrapper.name + "Proxy] lazy val outer = peer")
           } else {
             p.println("outer =>")
           }
 
-          if (wrapper.signals.nonEmpty) new SignalsWrapperPart(wrapper, instance, predicate, hasSignalDeps, p).write()
+          if (wrapper.signals.nonEmpty) new SignalsWrapperPart(wrapper, instance, predicate, hasSignalDeps, p, proxy).write()
           p.println()
-          if (wrapper.streams.nonEmpty) new EventsWrapperPart(wrapper, instance, predicate, hasStreamDeps, p).write()
+          if (wrapper.streams.nonEmpty) new EventsWrapperPart(wrapper, instance, predicate, hasStreamDeps, p, proxy).write()
           p.println()
 
           //BeanFixes
@@ -291,7 +294,8 @@ object Generator {
             classOf[String],
             classOf[String],
             classOf[Boolean],
-            classOf[Generator.Printer]).newInstance(wrapper, instance, predicate, hasDeps: java.lang.Boolean, p))
+            classOf[Generator.Printer],
+            classOf[Boolean]).newInstance(wrapper, instance, predicate, hasDeps: java.lang.Boolean, p, proxy: java.lang.Boolean))
 
           fixes filter (_.isDefinedAt(wrapper.peer)) foreach (_.write())
         }
@@ -331,8 +335,8 @@ object Generator {
             val testName = "test" + wrapper.peer.getSimpleName
             p.println("def " + testName + "() {"); p.inBlock {
               val params = {
-                if (wrapper.parameters.isEmpty) ""
-                else wrapper.parameters.drop(1).dropRight(1).split(",").map(_ => "Unit").mkString("[", ", ", "]")
+                if (wrapper.parametersDef.isEmpty) ""
+                else wrapper.parametersDef.drop(1).dropRight(1).split(",").map(_ => "Unit").mkString("[", ", ", "]")
               }
               p.println("val instance = new " + wrapper.peer.getName + params + "() with " + wrapper.name + params)
 
@@ -388,15 +392,41 @@ def decodeClassName(c: Class[_]): String = c match {
         else c.getName
     }
 
-  case class Wrapper(peer: Class[_]) {
+  case class Wrapper(peer: Class[_], beanInfo: BeanInfo) {
     var dependencies: Seq[Wrapper] = Vector.empty
     var signals: Seq[Signal] = Vector.empty
     var streams: Seq[EventStream] = Vector.empty
     def name = peer.getSimpleName + "Reactive"
 
-    lazy val parameters = {
-      val params = peer.getTypeParameters
-      if (params.nonEmpty) params.map(p => p.toString).mkString("[", ", ", "]") else ""
+    lazy val parametersDef = {
+      val tp = beanInfo.getBeanDescriptor().getValue("typeParametersDef").asInstanceOf[String]
+      if (tp != null) {if (tp.nonEmpty) "[" + tp + "]" else ""}
+      else {
+        val params = peer.getTypeParameters
+        def paramDef[T](p: Type): String = p match {
+          case tp: TypeVariable[_] => tp.getName + {
+            val bounds = tp.getBounds
+            if (bounds != null && bounds.length != 0) " <: " + bounds.map(paramDef).mkString(" <: ")
+            else ""
+          }
+          case wc: WildcardType => "_"
+          case c: Class[_] => decodeClassName(c) + {
+            val tp = c.getTypeParameters()
+            if (tp.length != 0) " <: " + tp.map(paramDef).mkString(" <: ")
+            else ""
+          }
+        }
+        if (params.nonEmpty) params.map(paramDef).mkString("[", ", ", "]") else ""
+      }
+    }
+    
+    lazy val parametersName = {
+      val tp = beanInfo.getBeanDescriptor().getValue("typeParameters").asInstanceOf[String]
+      if (tp != null) {if (tp.nonEmpty) "[" + tp + "]" else ""}
+      else {
+        val params = peer.getTypeParameters
+        if (params.nonEmpty) params.map(decodeType).mkString("[", ", ", "]") else ""
+      }
     }
 
     def alreadyDepends(w: Wrapper): Boolean = {
@@ -449,6 +479,9 @@ def decodeClassName(c: Class[_]): String = c match {
     override def equals(that: Any) = that match {
       case s: Signal => s.name == name && s.immutable == immutable
       case _ => false
+    }
+    override def hashCode = {
+      (if (immutable) 7 else 5) + (name.hashCode * 13)
     }
   }
   case class Val(pd: PropertyDescriptor) extends Signal("Val") { val immutable = true }

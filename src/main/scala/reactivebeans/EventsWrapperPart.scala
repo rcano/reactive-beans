@@ -5,7 +5,8 @@ class EventsWrapperPart(wrapper: Generator.Wrapper,
                         instance: String,
                         predicate: String,
                         hasDeps: Boolean,
-                        p: Generator.Printer) extends WrapperPart(wrapper, instance, predicate, hasDeps, p) {
+                        p: Generator.Printer,
+                        isProxy: Boolean) extends WrapperPart(wrapper, instance, predicate, hasDeps, p, isProxy) {
   def write() {
     p.println("trait EventStreams" + (if (hasDeps) " extends super.EventStreams" else "") + " {")
 

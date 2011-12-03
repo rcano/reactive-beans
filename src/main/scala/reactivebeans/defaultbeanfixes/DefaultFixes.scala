@@ -8,7 +8,8 @@ class JTextComponentBeanFix(wrapper: Generator.Wrapper,
                             instance: String,
                             predicate: String,
                             hasDeps: Boolean,
-                            p: Generator.Printer) extends BeanFix(wrapper, instance, predicate, hasDeps, p) {
+                            p: Generator.Printer,
+                            isProxy: Boolean) extends BeanFix(wrapper, instance, predicate, hasDeps, p, isProxy) {
   def isDefinedAt(w: Class[_]) = classOf[JTextComponent] == w
   def write() {
     p.println("//Fix for text property")
@@ -26,7 +27,8 @@ class JComboBoxBeanFix(wrapper: Generator.Wrapper,
                        instance: String,
                        predicate: String,
                        hasDeps: Boolean,
-                       p: Generator.Printer) extends BeanFix(wrapper, instance, predicate, hasDeps, p) {
+                       p: Generator.Printer,
+                       isProxy: Boolean) extends BeanFix(wrapper, instance, predicate, hasDeps, p, isProxy) {
   def isDefinedAt(w: Class[_]) = w.getName == "javax.swing.JComboBox"
   def write() {
     p.println("//Fix for the properties related to items")
@@ -40,7 +42,8 @@ class JListBeanFix(wrapper: Generator.Wrapper,
                    instance: String,
                    predicate: String,
                    hasDeps: Boolean,
-                   p: Generator.Printer) extends BeanFix(wrapper, instance, predicate, hasDeps, p) {
+                   p: Generator.Printer,
+                   isProxy: Boolean) extends BeanFix(wrapper, instance, predicate, hasDeps, p, isProxy) {
   def isDefinedAt(w: Class[_]) = w.getName == "javax.swing.JList"
   def write() {
     p.println("//Fix for the properties related to indices")
@@ -54,7 +57,8 @@ class JTreeBeanFix(wrapper: Generator.Wrapper,
                    instance: String,
                    predicate: String,
                    hasDeps: Boolean,
-                   p: Generator.Printer) extends BeanFix(wrapper, instance, predicate, hasDeps, p) {
+                   p: Generator.Printer,
+                   isProxy: Boolean) extends BeanFix(wrapper, instance, predicate, hasDeps, p, isProxy) {
   def isDefinedAt(w: Class[_]) = classOf[JTree] == w
   def write() {
     p.println("//Fix for the properties related to paths")
@@ -68,7 +72,8 @@ class JSliderAndJSpinnerBeanFix(wrapper: Generator.Wrapper,
                                 instance: String,
                                 predicate: String,
                                 hasDeps: Boolean,
-                                p: Generator.Printer) extends BeanFix(wrapper, instance, predicate, hasDeps, p) {
+                                p: Generator.Printer,
+                                isProxy: Boolean) extends BeanFix(wrapper, instance, predicate, hasDeps, p, isProxy) {
   def isDefinedAt(w: Class[_]) = classOf[JSlider] == w || classOf[JSpinner] == w
   def write() {
     p.println("//Fix for value property")

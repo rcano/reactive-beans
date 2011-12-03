@@ -7,7 +7,8 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
                          instance: String,
                          predicate: String,
                          hasDeps: Boolean,
-                         p: Generator.Printer) extends WrapperPart(wrapper, instance, predicate, hasDeps, p) {
+                         p: Generator.Printer,
+                         isProxy: Boolean) extends WrapperPart(wrapper, instance, predicate, hasDeps, p, isProxy) {
   def write() {
 
     p.println("trait Signals" + (if (hasDeps) " extends super.Signals" else "") + " {")
@@ -17,7 +18,19 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
     val callOnInstance = instance + "."
 
     p.inBlock {
-      for (signal <- wrapper.signals) {
+      val signals = if (!isProxy) wrapper.signals else wrapper.signals filter { s =>
+        s.pd match {
+          case ai: AdditionalInfo => ai.isPublic
+          case _ => true
+        }
+      }
+      if (signals exists (_.immutable)) {
+        p.println("//helper method to treat var as signals without specifying the type")
+        p.println("//which might arise visibility problems (e.g.: the listeners field in scala.swing.Component")
+        p.println("@inline private[this] def varAsSignal[T](v: Var[T]) = v: Signal[T]")
+      }
+
+      for (signal <- signals) {
         val readerMethodName = {
           val rm = signal.pd.getReadMethod
           if (peerDeclaredFields.find(f => f.getName == rm.getName &&
@@ -33,10 +46,9 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
           res
         }
         val signalDeclaration = if (overrides) "override lazy val " else "lazy val "
-        val signalType = if (signal.immutable) ": Signal[" + decodeType(signal.pd.getReadMethod.getGenericReturnType) + "]" else ""
-        p.print(signalDeclaration + signal.name + signalType + " = ");
+        p.print(signalDeclaration + signal.name + " = ");
         if (signal.immutable) {
-          p.printlnNP("Var(" + callOnInstance + readerMethodName + ")") //even Vals are implemented as Vars, because readonly properties might actually mutate
+          p.printlnNP("varAsSignal(Var(" + callOnInstance + readerMethodName + "))") //even Vals are implemented as Vars, because readonly properties might actually mutate
         } else {
           p.printlnNP("{")
           p.inBlock {
@@ -48,7 +60,6 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
             p.println("res")
           }; p.println("}")
         }
-
       }
       p.println()
 
@@ -62,7 +73,7 @@ class SignalsWrapperPart(wrapper: Generator.Wrapper,
             p.println("def assign[T](s: Signal[T], value: Any) = s match {case v: Var[_] => v.asInstanceOf[Var[T]].value = value.asInstanceOf[T]; case _ =>}")
             p.println("evt.getPropertyName match {")
             p.inBlock {
-              for (signal <- wrapper.signals) {
+              for (signal <- signals) {
                 p.println("case \"" + signal.name + "\" => assign(" + signal.name + ", evt.getNewValue)")
               }
               p.println("case _ =>") //ignore unknown properties
