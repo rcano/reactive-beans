@@ -23,15 +23,14 @@ Features
 --------
 
 The tools is capable of generating compilable wrapper for javax.swing and scala.swing at once.
-For java, the tool should be always successful, for scala expect some rough edges as the tool is still maturing.
+As an example, there is a directory in the root of the repository called generatedWrappersTester which
+is a tiny sbt project with the generated wrappers for both javax.swing and scala.swing.
 
 
 Compiling
 ---------
 
-The code has only one dependency that it used for reflecting over scala, that is scalap. Make sure that
-dependency is satisfied and you will be able to compile the code with the project management tool that you prefer for 
-working with scala.
+The project is managed using sbt 0.11, to compiling should be as easy as forking and issuing compile in sbt's console.
 
 Usage
 -----
