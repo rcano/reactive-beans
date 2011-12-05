@@ -37,9 +37,15 @@ object Generator {
       "\t\t\t\t\tthe wrapper based on those.\n" +
       "\t\t\t\tscala: Will always force obtaining the BeanInfo via ScalaIntrospector,\n" +
       "\t\t\t\t\tit is here for completeness, but probably will never be used.")
-    println("\t --generate-test: Generate test classes to test the correct notification of properties for" +
-      "\t                  outputted classes")
-    println("\t --bean-fixes: Specifies classes or packages to look for BeanFix.")
+    println("\t --bean-fixes: Specifies classes or packages to look for BeanFix.\n" +
+      "\t               Some beans are broken and they don't expose their properties and events\n" +
+      "\t               properly, for example all javax.swing.JTextComponents like JTextField and\n" +
+      "\t               JTextArea do not expose changes to text property via property changes, so\n" +
+      "\t               in order to keep the signal updated, a DocumentListener has to be registered.\n" +
+      "\t               Fixes like the one said, are provided by implementations of BeanFix, such\n" +
+      "\t               instances get a change to generate more code into the final output.\n" +
+      "\t               reactivebeans.defaultbeanfixes.* should be used when creating javax.swing classes,\n" +
+      "\t               it contains several common fixes to javax.swing like the one above.")
     println("\t <toProcess>: class or package written in java naming convention like javax.swing.JLabel")
     println("Classes to be processed must be already in classpath.")
   }
